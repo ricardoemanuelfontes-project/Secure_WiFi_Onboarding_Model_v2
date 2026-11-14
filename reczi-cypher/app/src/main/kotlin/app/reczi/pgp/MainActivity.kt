@@ -262,6 +262,7 @@ class MainActivity : Activity() {
             val pin = field("PIN", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD)
             val msg = label("")
             col.addView(pin)
+            col.addView(showToggle(pin))
             col.addView(msg)
             col.addView(guard(primaryButton("Entrar") { tryPin(pin, msg) }))
         }
@@ -620,6 +621,7 @@ class MainActivity : Activity() {
         val p2 = field("Repete", type)
         box.addView(p1)
         if (repeat) box.addView(p2)
+        box.addView(showToggle(p1, p2))
         val dialog = AlertDialog.Builder(this).setTitle(title).setView(box)
             .setPositiveButton("OK", null).setNegativeButton("Cancelar") { _, _ -> p1.setText(""); p2.setText(""); onCancel() }
             .setOnCancelListener { onCancel() }
@@ -1007,6 +1009,21 @@ class MainActivity : Activity() {
     private fun passwordField(hint: String) =
         field(hint, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
 
+    /**
+     * Caixa "Mostrar" para ver o que se escreve nos campos de palavra-passe ou PIN (vem desligada).
+     * As capturas de ecrã continuam bloqueadas; só protege menos de quem estiver a olhar para o ecrã.
+     */
+    private fun showToggle(vararg fields: EditText) = CheckBox(this).apply {
+        text = "Mostrar"
+        setOnClickListener {
+            for (f in fields) {
+                val cursor = f.selectionEnd
+                f.transformationMethod = if (isChecked) null else android.text.method.PasswordTransformationMethod.getInstance()
+                f.setSelection(cursor.coerceIn(0, f.length()))
+            }
+        }
+    }
+
     /** Campo de várias linhas sem sugestões nem aprendizagem do teclado. */
     private fun textArea(hint: String, lines: Int, mono: Boolean = false) = field(
         hint,
@@ -1092,6 +1109,7 @@ class MainActivity : Activity() {
             col.addView(heading("Criar uma chave nova"))
             col.addView(label("Usa uma frase longa como palavra-passe (5 ou mais palavras ao acaso). Sem ela ninguém consegue usar a tua chave, nem tu."))
             listOf(name, email, pass1, pass2).forEach { col.addView(it) }
+            col.addView(showToggle(pass1, pass2))
             col.addView(guard(primaryButton("Criar chave") { create() }))
             col.addView(heading("Importar a tua chave privada"))
             col.addView(label("Por exemplo, o ficheiro criado no computador com \"cofre backup\"."))
