@@ -749,8 +749,16 @@ class MainActivity : Activity() {
                     pickOutput(uri, KIND_FILE_DEC, if (plain != name && plain.isNotEmpty()) plain else "$name.aberto")
                 }
                 KIND_QR_PUBLIC, KIND_QR_PRIVATE -> work("A ler o código QR…", { readQrImage(uri) }) { text ->
-                    if (text == null) alert("QR", "Não encontrei nenhum código QR nesta imagem. Tenta uma fotografia mais nítida e de frente.")
-                    else handleQr(kind, text)
+                    if (text == null) return@work alert("QR", "Não encontrei nenhum código QR nesta imagem. Tenta uma fotografia mais nítida e de frente.")
+                    // Uma fotografia por código: numa chave grande, pede as seguintes até estarem todas.
+                    val asm = qrAssembler ?: Qr.Assembler().also { qrAssembler = it }
+                    val (done, message) = feedQr(asm, text)
+                    if (done) {
+                        qrAssembler = null
+                        handleQr(kind, asm.result!!)
+                    } else {
+                        confirm("QR", message, "Escolher outra fotografia") { openFile(kind) }
+                    }
                 }
                 else -> work("A ler o ficheiro…", { readUri(uri) }) { bytes ->
                     when (kind) {
@@ -790,18 +798,46 @@ class MainActivity : Activity() {
     /** Mostra uma chave como código QR. */
     private fun showQr(title: String, key: org.bouncycastle.openpgp.PGPKeyRing, note: String) {
         val side = minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels) - dp(96)
-        work("A desenhar o QR…", { QrScanner.render(Qr.ofKey(key).second, side) }) { bmp ->
+        work("A desenhar o QR…", { Qr.ofKey(key).map { QrScanner.render(it.modules, side) } }) { bitmaps ->
             val box = column(dp(20))
             box.setBackgroundColor(Color.WHITE)
-            box.addView(ImageView(this).apply {
-                setImageBitmap(bmp)
+            val image = ImageView(this).apply { adjustViewBounds = true }
+            val which = TextView(this).apply { setTextColor(Color.BLACK); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
+            var index = 0
+            fun draw() {
+                image.setImageBitmap(bitmaps[index])
                 // Sem suavizar: os quadrados têm de ficar nítidos para a câmara os ler.
-                (drawable as? android.graphics.drawable.BitmapDrawable)?.setFilterBitmap(false)
-                adjustViewBounds = true
-            }, LinearLayout.LayoutParams(side, side))
+                (image.drawable as? android.graphics.drawable.BitmapDrawable)?.setFilterBitmap(false)
+                which.text = "Código ${index + 1} de ${bitmaps.size}"
+            }
+            draw()
+            box.addView(image, LinearLayout.LayoutParams(side, side))
+            if (bitmaps.size > 1) {
+                // Chave grande (RSA): vários códigos, que o outro telemóvel lê um a um.
+                box.addView(which)
+                box.addView(buttonRow(
+                    button("◀ Anterior") { index = (index + bitmaps.size - 1) % bitmaps.size; draw() },
+                    primaryButton("Seguinte ▶") { index = (index + 1) % bitmaps.size; draw() },
+                ))
+                box.addView(TextView(this).apply {
+                    text = "Esta chave é grande e vai em ${bitmaps.size} códigos. Quem lê vai vendo quais faltam; a ordem não importa."
+                    setTextColor(Color.BLACK)
+                })
+            }
             box.addView(TextView(this).apply { this.text = note; setTextColor(Color.BLACK); setPadding(0, dp(12), 0, 0) })
             AlertDialog.Builder(this).setTitle(title).setView(scroll(box)).setPositiveButton("Fechar", null).showSecure()
         }
+    }
+
+    /** Códigos QR lidos até agora (uma chave grande vem em vários; ver [Qr.Assembler]). */
+    private var qrAssembler: Qr.Assembler? = null
+
+    /** Junta um código lido aos anteriores. Devolve se a chave já está completa e o que dizer a quem lê. */
+    private fun feedQr(asm: Qr.Assembler, text: String): Pair<Boolean, String> = try {
+        if (asm.add(text)) true to ""
+        else false to "Lidos ${asm.have} de ${asm.total} códigos. Falta(m): ${asm.missing.joinToString(", ")}. Aponta para o seguinte."
+    } catch (e: PgpError) {
+        false to (e.message ?: "Este código QR não é do Reczi cypher.")
     }
 
     /** Lê um QR com a câmara (pedindo a permissão na primeira vez) ou, em alternativa, de uma fotografia. */
@@ -810,12 +846,14 @@ class MainActivity : Activity() {
             pendingScan = kind
             return requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
         }
+        val asm = Qr.Assembler()
+        qrAssembler = asm
         QrScanner(
             this,
             if (kind == KIND_QR_PRIVATE) "Ler o backup em papel" else "Ler a chave de um contacto",
-            accept = { Disguise.isDisguised(it) },
+            accept = { feedQr(asm, it) },
             onPhoto = { openFile(kind) },
-            onResult = { handleQr(kind, it) },
+            onDone = { qrAssembler = null; handleQr(kind, asm.result!!) },
         ).show()
     }
 
@@ -828,7 +866,7 @@ class MainActivity : Activity() {
         confirm(
             "Câmara", "Sem acesso à câmara não consigo ler o código diretamente. Podes tirar uma fotografia ao código " +
                 "com a app da câmara e escolhê-la aqui.", "Escolher fotografia",
-        ) { openFile(kind) }
+        ) { qrAssembler = Qr.Assembler(); openFile(kind) }
     }
 
     /** Lê um QR de uma imagem escolhida, reduzindo-a primeiro se for muito grande. */
@@ -843,8 +881,7 @@ class MainActivity : Activity() {
         return try { QrScanner.decodeBitmap(bmp) } finally { bmp.recycle() }
     }
 
-    private fun handleQr(kind: String?, text: String) {
-        val bytes = Disguise.reveal(text) ?: return alert("QR", "Este código QR não é do Reczi cypher.")
+    private fun handleQr(kind: String?, bytes: ByteArray) {
         if (kind == KIND_QR_PRIVATE) {
             show(TAB_KEYS)
             keys.importPrivate(bytes)
@@ -1086,6 +1123,12 @@ class MainActivity : Activity() {
         private val email = field("Email", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         private val pass1 = passwordField("Palavra-passe (mín. ${Pgp.MIN_PASSPHRASE} caracteres)")
         private val pass2 = passwordField("Repete a palavra-passe")
+        private val keyType = Spinner(this@MainActivity).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                arrayOf("Tipo: Curve25519 (recomendado)", "Tipo: RSA 4096 (maior e mais lento)"),
+            )
+        }
         private val problems = column(0)
         private val steps = column(0)
         private val list = column(0)
@@ -1098,7 +1141,11 @@ class MainActivity : Activity() {
                 "• Backup da privada / Backup em papel: uma cópia fora do telemóvel. Sem ela, se perderes o telemóvel ou desinstalares a app, " +
                 "perdes tudo o que te enviaram.\n" +
                 "• Prolongar validade: a chave vale 2 anos; prolonga-a e volta a enviar a pública aos contactos.\n" +
-                "• Mostrar QR também mostra a impressão digital em palavras, para a confirmares com os teus contactos.\n\n" +
+                "• Mostrar QR também mostra a impressão digital em palavras, para a confirmares com os teus contactos.\n" +
+                "• Tipo de chave: Curve25519 é o recomendado (chaves e mensagens pequenas, cabe num só QR). RSA 4096 serve se precisares " +
+                "de RSA; é maior e mais lento, e o QR e o backup em papel passam a ser vários códigos, lidos um a um. " +
+                "Chaves RSA criadas no computador importam-se aqui e funcionam da mesma maneira.\n" +
+                "• Os campos de palavra-passe têm uma caixa \"Mostrar\" para veres o que escreves.\n\n" +
                 "A palavra-passe da chave não se recupera: se a esqueceres, a chave fica inútil."
 
         init {
@@ -1110,6 +1157,7 @@ class MainActivity : Activity() {
             col.addView(label("Usa uma frase longa como palavra-passe (5 ou mais palavras ao acaso). Sem ela ninguém consegue usar a tua chave, nem tu."))
             listOf(name, email, pass1, pass2).forEach { col.addView(it) }
             col.addView(showToggle(pass1, pass2))
+            col.addView(keyType)
             col.addView(guard(primaryButton("Criar chave") { create() }))
             col.addView(heading("Importar a tua chave privada"))
             col.addView(label("Por exemplo, o ficheiro criado no computador com \"cofre backup\"."))
@@ -1240,9 +1288,10 @@ class MainActivity : Activity() {
             val e = email.text.toString()
             val chars = pass1.takeChars()
             pass2.setText("")
-            change("A criar a chave…", {
+            val rsa = keyType.selectedItemPosition == 1
+            change(if (rsa) "A criar a chave RSA (pode demorar um minuto ou mais)…" else "A criar a chave…", {
                 try {
-                    Pgp.generate(n, e, chars).also { vault.addMyKey(it) }
+                    Pgp.generate(n, e, chars, rsa = rsa).also { vault.addMyKey(it) }
                 } finally {
                     chars.fill('\u0000')
                 }
@@ -1308,7 +1357,7 @@ class MainActivity : Activity() {
             ) {
                 work("A preparar…", {
                     val ring = vault.backupRing(info.fingerprint)
-                    Qr.ofKey(ring).second to Pgp.armor(ring)
+                    Qr.ofKey(ring).map { it.modules } to Pgp.armor(ring)
                 }) { (qr, armored) ->
                     val date = DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.forLanguageTag("pt-PT")).format(Date())
                     PaperBackup(this@MainActivity, info.userId, info.fingerprint, date, qr, armored) { markBackedUp(info.fingerprint) }
@@ -1345,7 +1394,8 @@ class MainActivity : Activity() {
         override val help get() =
             "Aqui guardas as chaves PÚBLICAS das pessoas a quem queres escrever.\n\n" +
                 "Convidar: envia a tua chave pública com instruções para quem ainda não usa a app.\n" +
-                "1. Importa a chave: cola o texto que te enviaram, abre um ficheiro, ou lê o QR do telemóvel da pessoa.\n" +
+                "1. Importa a chave: cola o texto que te enviaram, abre um ficheiro, ou lê o QR do telemóvel da pessoa. " +
+                "Se a chave dela for grande (RSA), o QR vem em vários códigos: lê-os um a um, a app diz quais faltam.\n" +
                 "2. Verifica: comparem a impressão digital (as letras e números) em pessoa ou por chamada. Serve para teres a certeza de que " +
                 "a chave é mesmo dela e não de alguém a meio. Só depois podes encriptar para esse contacto.\n\n" +
                 "Conversa: abre as Mensagens já viradas para esse contacto, com o formato e o código secreto que usaste da última vez.\n\n" +

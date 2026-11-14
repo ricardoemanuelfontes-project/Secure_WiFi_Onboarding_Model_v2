@@ -29,7 +29,8 @@ class PaperBackup(
     private val name: String,
     private val fingerprint: String,
     private val date: String,
-    private val qr: Array<BooleanArray>,
+    /** Um código, ou vários quando a chave é grande (RSA): um por página. */
+    private val qrs: List<Array<BooleanArray>>,
     private val armored: String,
     /** Chamado quando o documento foi entregue ao serviço de impressão. */
     private val onPrinted: () -> Unit = {},
@@ -84,22 +85,35 @@ class PaperBackup(
         for (line in listOf(
             "Esta chave continua protegida pela tua palavra-passe: sem ela, este papel não abre nada.",
             "Guarda-o num local seguro (cofre). Não o fotografes nem o guardes na cloud.",
-            "Para restaurar: Reczi cypher > Chaves > Importar > Ler QR.",
+            "Para restaurar: Reczi cypher > Chaves > Importar > Ler QR" +
+                if (qrs.size > 1) " e lê os ${qrs.size} códigos, um de cada vez, por qualquer ordem." else ".",
         )) { canvas.drawText(line, left, y, black); y += 15f }
         y += 12f
-        val side = minOf(area.width() - 72f, area.bottom - y - 36f)
-        val cell = side / qr.size
         val fill = Paint().apply { color = 0xFF000000.toInt(); isAntiAlias = false }
-        for (r in qr.indices) for (c in qr[r].indices) {
-            if (qr[r][c]) canvas.drawRect(left + c * cell, y + r * cell, left + (c + 1) * cell + 0.05f, y + (r + 1) * cell + 0.05f, fill)
+        var pages = 0
+        qrs.forEachIndexed { i, qr ->
+            if (i > 0) {
+                // Cada código seguinte na sua página, identificado, para não se confundirem ao ler.
+                doc.finishPage(page)
+                page = doc.startPage(++pages)
+                canvas = page.canvas
+                y = area.top + 56f
+                canvas.drawText("Reczi cypher - backup de ${fingerprint.takeLast(16)}", left, y, bold); y += 24f
+            }
+            if (qrs.size > 1) { canvas.drawText("Código ${i + 1} de ${qrs.size}", left, y, black); y += 16f }
+            val side = minOf(area.width() - 72f, area.bottom - y - 36f)
+            val cell = side / qr.size
+            for (r in qr.indices) for (c in qr[r].indices) {
+                if (qr[r][c]) canvas.drawRect(left + c * cell, y + r * cell, left + (c + 1) * cell + 0.05f, y + (r + 1) * cell + 0.05f, fill)
+            }
         }
         doc.finishPage(page)
 
         // Páginas seguintes: o texto da chave, para escrever à mão/OCR se o QR falhar.
-        val lines = listOf("Texto da chave (o mesmo que está no código QR):", "") + armored.trim().lines()
+        val lines = listOf("Texto da chave (o mesmo que está nos códigos QR):", "") + armored.trim().lines()
         val perPage = ((area.height() - 96f) / 11f).toInt().coerceAtLeast(10)
         lines.chunked(perPage).forEachIndexed { i, chunk ->
-            page = doc.startPage(i + 1)
+            page = doc.startPage(pages + 1 + i)
             canvas = page.canvas
             y = area.top + 48f
             for (line in chunk) { canvas.drawText(line, left, y, mono); y += 11f }

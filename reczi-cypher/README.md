@@ -3,7 +3,7 @@
 App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com o GnuPG
 (e com o `cofre` / Cofre PGP do Debian).
 
-- **Chaves**: criar (Curve25519: ed25519 + cv25519, válida 2 anos), importar a tua chave privada
+- **Chaves**: criar (Curve25519: ed25519 + cv25519, ou RSA 4096 se precisares; válida 2 anos), importar a tua chave privada
   do computador, partilhar a chave pública, backup da privada, prolongar a validade.
 - **Contactos**: importar chaves públicas (colar, ficheiro ou partilhar a partir de outra app) e
   verificar a impressão digital. Só se pode encriptar para contactos verificados.
@@ -21,6 +21,9 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
   palavra-passe. O título de cada nota fica visível na lista e não é protegido pela palavra-passe.
 - **QR**: "Mostrar QR" mostra a tua chave pública; "Ler QR" em Contactos importa a de outra pessoa
   com a câmara (ou de uma fotografia). A verificação da impressão digital continua a ser pedida.
+- **Chaves grandes (RSA)**: não cabem num só QR, por isso vão em vários códigos (3 para uma
+  pública RSA 4096, 5 para a privada), mostrados ou impressos em sequência e lidos um a um, por
+  qualquer ordem; a app diz quais faltam.
 - **Backup em papel**: imprime a chave privada (protegida pela palavra-passe) em QR e em texto;
   restaura-se em Chaves > Importar > Ler QR.
 

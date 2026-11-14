@@ -89,8 +89,11 @@ object Pgp {
     const val MAX_FILE = 2L shl 30
 
     /** Cria um par de chaves Curve25519 (como o GnuPG): primária ed25519 só para certificar,
-     *  subchave ed25519 para assinar e subchave cv25519 para encriptar. */
-    fun generate(name: String, email: String, passphrase: CharArray, validYears: Int = 2, now: Date = Date()): PGPSecretKeyRing {
+     *  subchave ed25519 para assinar e subchave cv25519 para encriptar. Com [rsa], cria antes
+     *  uma chave RSA de 4096 bits (maior e mais lenta; para quem precisa de RSA). */
+    fun generate(
+        name: String, email: String, passphrase: CharArray, validYears: Int = 2, now: Date = Date(), rsa: Boolean = false,
+    ): PGPSecretKeyRing {
         val n = name.trim()
         val e = email.trim()
         if (n.isEmpty() || !Regex("^[^@\\s<>]+@[^@\\s<>]+$").matches(e)) {
@@ -98,6 +101,17 @@ object Pgp {
         }
         if (n.any { it == '<' || it == '>' || Character.isISOControl(it) }) throw PgpError("O nome não pode ter < ou >.")
         checkNewPassphrase(passphrase)
+        if (rsa) {
+            // Como o GnuPG faz com RSA: primária para certificar e assinar, subchave para encriptar.
+            val type = KeyType.RSA(org.pgpainless.key.generation.type.rsa.RsaLength._4096)
+            val key = PGPainless.buildKeyRing()
+                .setPrimaryKey(KeySpec.getBuilder(type, KeyFlag.CERTIFY_OTHER, KeyFlag.SIGN_DATA).setKeyCreationDate(now).build())
+                .addSubkey(KeySpec.getBuilder(type, KeyFlag.ENCRYPT_COMMS, KeyFlag.ENCRYPT_STORAGE).setKeyCreationDate(now).build())
+                .addUserId("$n <$e>")
+                .setExpirationDate(plusYears(now, validYears))
+                .build()
+            return protect(key, Passphrase.emptyPassphrase(), passphrase)
+        }
         val unprotected = PGPainless.buildKeyRing()
             .setPrimaryKey(KeySpec.getBuilder(KeyType.EDDSA_LEGACY(EdDSALegacyCurve._Ed25519), KeyFlag.CERTIFY_OTHER).setKeyCreationDate(now).build())
             .addSubkey(KeySpec.getBuilder(KeyType.EDDSA_LEGACY(EdDSALegacyCurve._Ed25519), KeyFlag.SIGN_DATA).setKeyCreationDate(now).build())

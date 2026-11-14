@@ -57,13 +57,72 @@ object Qr {
         null
     }
 
+    /** Um código QR: o texto que leva e os módulos para o desenhar. */
+    class Code(val text: String, val modules: Array<BooleanArray>)
+
+    /** Bytes de chave por código, quando é preciso dividir (QR de densidade média, fácil de ler). */
+    private const val PART_BYTES = 1100
+    private const val PART_MARK: Byte = 0x01
+    private const val PART_HEADER = 7
+    const val MAX_PARTS = 40
+
     /**
-     * QR de uma chave pública (ou de uma privada protegida, para o backup em papel): o texto e os
-     * módulos. Ver [reliable].
+     * QR de uma chave pública (ou de uma privada protegida, para o backup em papel). As chaves
+     * pequenas (Curve25519) cabem num só código; as grandes (RSA) são divididas por vários, para
+     * mostrar ou imprimir em sequência e ler um a um, por qualquer ordem ([Assembler]).
+     *
+     * Cada parte leva: marca (1 byte, que nunca é o início de dados OpenPGP), id do conjunto (4),
+     * número da parte (1), total (1) e o pedaço da chave, tudo no texto disfarçado habitual.
      */
-    fun ofKey(key: org.bouncycastle.openpgp.PGPKeyRing): Pair<String, Array<BooleanArray>> {
+    fun ofKey(key: org.bouncycastle.openpgp.PGPKeyRing): List<Code> {
         val bytes = key.encoded
-        return reliable { Disguise.hide(bytes) }
+        if (bytes.size <= PART_BYTES) return listOf(reliable { Disguise.hide(bytes) })
+        val total = (bytes.size + PART_BYTES - 1) / PART_BYTES
+        if (total > MAX_PARTS) throw PgpError("Esta chave é demasiado grande para códigos QR.")
+        val size = (bytes.size + total - 1) / total
+        val set = ByteArray(4).also { java.security.SecureRandom().nextBytes(it) }
+        return (0 until total).map { i ->
+            val chunk = bytes.copyOfRange(i * size, minOf(bytes.size, (i + 1) * size))
+            val part = byteArrayOf(PART_MARK) + set + byteArrayOf(i.toByte(), total.toByte()) + chunk
+            reliable { Disguise.hide(part) }
+        }
+    }
+
+    /** Junta os códigos lidos (um só, ou as várias partes de uma chave grande) até a chave estar completa. */
+    class Assembler {
+        private var set: ByteArray? = null
+        private val parts = HashMap<Int, ByteArray>()
+        var total = 0
+            private set
+        val have get() = parts.size
+        /** Números (a começar em 1) dos códigos que ainda falta ler. */
+        val missing get() = (1..total).filter { it - 1 !in parts }
+        /** A chave completa (bytes OpenPGP), quando [add] devolveu true. */
+        var result: ByteArray? = null
+            private set
+
+        /** Acrescenta um código lido. Devolve true quando a chave está completa. */
+        @Synchronized
+        fun add(text: String): Boolean {
+            val bytes = Disguise.reveal(text) ?: throw PgpError("Este código QR não é do Reczi cypher.")
+            if ((bytes[0].toInt() and 0x80) != 0) { // dados OpenPGP: a chave inteira num só código
+                result = bytes
+                return true
+            }
+            val n = if (bytes.size > PART_HEADER && bytes[0] == PART_MARK) bytes[6].toInt() and 0xff else 0
+            val index = if (n > 0) bytes[5].toInt() and 0xff else 0
+            if (n !in 2..MAX_PARTS || index >= n) throw PgpError("Este código QR não é do Reczi cypher.")
+            val id = bytes.copyOfRange(1, 5)
+            if (set != null && (!set.contentEquals(id) || total != n)) {
+                throw PgpError("Este código é de outro conjunto (outra chave, ou outra vez que foi mostrada/impressa). Lê só os códigos do mesmo conjunto.")
+            }
+            set = id
+            total = n
+            parts[index] = bytes.copyOfRange(PART_HEADER, bytes.size)
+            if (parts.size < n) return false
+            result = (0 until n).fold(ByteArray(0)) { acc, i -> acc + parts.getValue(i) }
+            return true
+        }
     }
 
     /**
@@ -72,11 +131,11 @@ object Qr {
      * códigos grandes. Como o texto disfarçado muda de cada vez ([text] é chamado de novo), gera-se
      * outro até sair um que se lê de volta, e só esse é mostrado ou impresso.
      */
-    fun reliable(text: () -> String): Pair<String, Array<BooleanArray>> {
+    fun reliable(text: () -> String): Code {
         repeat(30) {
             val t = text()
             val modules = encode(t)
-            if (listOf(3, 4, 5, 6).all { scale -> readsBack(modules, scale, t) }) return t to modules
+            if (listOf(3, 4, 5, 6).all { scale -> readsBack(modules, scale, t) }) return Code(t, modules)
         }
         throw PgpError("Não foi possível criar um código QR fiável.")
     }

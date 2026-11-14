@@ -25,14 +25,16 @@ import java.util.concurrent.Executors
  * Lê um código QR com a câmara traseira, dentro de um diálogo. As imagens da câmara nunca são
  * guardadas: só passam pelo leitor de QR, em memória. Quem chama já confirmou a permissão da câmara.
  *
- * [accept] decide se o texto lido serve (p. ex. se é uma chave); enquanto devolver false continua a ler.
+ * [accept] recebe cada código lido (fora da thread principal) e devolve se já está tudo lido e
+ * uma indicação para mostrar. Enquanto não estiver, continua a ler: é assim que se leem as várias
+ * partes de uma chave grande, uma a seguir à outra.
  */
 class QrScanner(
     private val activity: Activity,
     private val title: String,
-    private val accept: (String) -> Boolean,
+    private val accept: (String) -> Pair<Boolean, String>,
     private val onPhoto: () -> Unit,
-    private val onResult: (String) -> Unit,
+    private val onDone: () -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val decoder = Executors.newSingleThreadExecutor()
@@ -135,12 +137,12 @@ class QrScanner(
                 decoder.execute {
                     val text = try { decodeBitmap(bmp) } catch (e: Throwable) { null }
                     bmp.recycle()
-                    val ok = text != null && runCatching { accept(text) }.getOrDefault(false)
+                    val step = text?.let { runCatching { accept(it) }.getOrNull() }
                     main.post {
                         busy = false
                         if (closed) return@post
-                        if (ok) { dialog?.dismiss(); onResult(text!!) }
-                        else if (text != null) hint.text = "Este código QR não é do Reczi cypher. Aponta para o código certo."
+                        if (step?.first == true) { dialog?.dismiss(); onDone() }
+                        else if (step != null) hint.text = step.second
                     }
                 }
             }

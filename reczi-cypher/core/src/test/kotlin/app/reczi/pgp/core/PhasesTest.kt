@@ -216,6 +216,60 @@ class PhasesTest {
         assertFalse(words == Pgp.fingerprintWords(Pgp.fingerprint(b)))
     }
 
+    @Test
+    fun rsaKeysWorkAndTravelInSeveralQrCodes() {
+        val rsa = Pgp.generate("Ana RSA", "ana@exemplo.pt", pass, rsa = true)
+        val info = Pgp.info(rsa)
+        assertTrue(info.canEncrypt && info.canSign)
+        assertEquals(4096, rsa.publicKey.bitStrength)
+        assertTrue(Pgp.isProtected(rsa) && Pgp.checkPassphrase(rsa, pass))
+
+        // Uma chave RSA e uma Curve25519 falam uma com a outra, nos dois sentidos.
+        val ana = Vault(MemoryStore()).apply { addMyKey(rsa) }
+        val (rui, ruiFpr) = vaultWithKey("Rui", "rui@exemplo.pt")
+        ana.importContacts(listOf(Pgp.certificateOf(rui.myKey(ruiFpr))))
+        ana.setVerified(ruiFpr, true)
+        rui.importContacts(listOf(Pgp.certificateOf(rsa)))
+        rui.setVerified(info.fingerprint, true)
+        val toRui = rui.decrypt(ana.disguise(ana.encrypt("de RSA", listOf(ruiFpr), info.fingerprint, true, pass), false), pass)
+        assertEquals("de RSA", toRui.text)
+        assertTrue(toRui.signerVerified)
+        val toAna = ana.decrypt(rui.encrypt("para RSA", listOf(info.fingerprint), ruiFpr, true, pass), pass)
+        assertEquals("para RSA", toAna.text)
+        assertTrue(toAna.signerVerified)
+        assertTrue(Pgp.info(Pgp.extendExpiry(rsa, pass, years = 3)).canEncrypt)
+
+        // Não cabem num só QR: vão em várias partes, lidas por qualquer ordem e com repetições.
+        for (ring in listOf(Pgp.certificateOf(rsa), rsa)) {
+            val codes = Qr.ofKey(ring)
+            println("QR RSA 4096: ${ring.encoded.size} bytes em ${codes.size} códigos de ${codes.maxOf { it.modules.size } - 8} módulos")
+            assertTrue(codes.size in 2..8)
+            val asm = Qr.Assembler()
+            val order = codes.reversed() + codes.first()
+            order.forEachIndexed { i, c ->
+                val (px, w, h) = render(c.modules, 4)
+                val done = asm.add(Qr.decode(px, w, h)!!)
+                if (i < codes.size - 1) {
+                    assertFalse(done)
+                    assertEquals(codes.size, asm.total)
+                    assertEquals(i + 1, asm.have)
+                    assertTrue(1 in asm.missing)
+                }
+            }
+            assertContentEquals(ring.encoded, asm.result)
+        }
+        assertEquals(Pgp.fingerprint(rsa), Pgp.fingerprint(Pgp.parseSecretKeys(Qr.Assembler().apply { Qr.ofKey(rsa).forEach { add(it.text) } }.result!!).single()))
+
+        // Partes de conjuntos diferentes não se misturam; um QR qualquer é recusado.
+        val mixed = Qr.Assembler().apply { add(Qr.ofKey(rsa).first().text) }
+        assertFailsWith<PgpError> { mixed.add(Qr.ofKey(rsa).last().text) }
+        assertFailsWith<PgpError> { Qr.Assembler().add("https://exemplo.pt") }
+        // Uma chave pequena continua a ser um só código, completo à primeira.
+        val small = Qr.Assembler()
+        assertTrue(small.add(Qr.ofKey(Pgp.certificateOf(rui.myKey(ruiFpr))).single().text))
+        assertEquals(ruiFpr, Pgp.fingerprint(Pgp.parseCertificates(small.result!!).single()))
+    }
+
     /** Desenha os módulos como uma imagem, [scale] píxeis por módulo. */
     private fun render(m: Array<BooleanArray>, scale: Int): Triple<IntArray, Int, Int> {
         val w = m[0].size * scale
@@ -231,7 +285,9 @@ class PhasesTest {
         val rnd = java.util.Random(7)
         var failures = 0
         repeat(60) {
-            val (text, modules) = Qr.reliable { Disguise.hide(ByteArray(950).also(rnd::nextBytes)) }
+            val code = Qr.reliable { Disguise.hide(ByteArray(950).also(rnd::nextBytes)) }
+            val text = code.text
+            val modules = code.modules
             for (scale in listOf(7, 8)) {
                 val (px, w, h) = render(modules, scale)
                 if (Qr.decode(px, w, h) != text) failures++
@@ -249,7 +305,9 @@ class PhasesTest {
         val key = Pgp.generate("Ana Maria Lima Fontes", "ana.maria.lima@exemplo.pt", pass)
         val cert = Pgp.certificateOf(key)
         for ((ring, what) in listOf(cert to "PUBLIC", key to "PRIVATE")) {
-            val (text, modules) = Qr.ofKey(ring)
+            val code = Qr.ofKey(ring).single()
+            val text = code.text
+            val modules = code.modules
             assertEquals(modules.size, modules[0].size)
             assertTrue(modules.size <= 177 + 8, "cabe num QR (${modules.size} módulos)")
             println("QR $what: ${ring.encoded.size} bytes, ${text.length} caracteres, ${modules.size} módulos")
@@ -259,12 +317,12 @@ class PhasesTest {
             assertTrue(armored.contains("BEGIN PGP $what KEY BLOCK"))
         }
         // A chave privada volta inteira e ainda abre com a palavra-passe.
-        val back = Pgp.parseSecretKeys(Disguise.reveal(Qr.ofKey(key).first)!!).single()
+        val back = Pgp.parseSecretKeys(Disguise.reveal(Qr.ofKey(key).single().text)!!).single()
         assertEquals(Pgp.fingerprint(key), Pgp.fingerprint(back))
         assertTrue(Pgp.checkPassphrase(back, pass))
         // E a pública importa-se como contacto.
         val v = Vault(MemoryStore()).apply { addMyKey(Pgp.generate("Rui", "rui@exemplo.pt", pass)) }
-        val scanned = v.reveal(Qr.ofKey(cert).first)!!.armored
+        val scanned = v.reveal(Qr.ofKey(cert).single().text)!!.armored
         assertEquals(listOf(Pgp.fingerprint(key)), v.importContacts(Pgp.parseCertificates(scanned.toByteArray())).added)
 
         assertNull(Qr.decode(IntArray(100 * 100) { 0xFFFFFFFF.toInt() }, 100, 100))
