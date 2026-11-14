@@ -24,6 +24,16 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 - **Backup em papel**: imprime a chave privada (protegida pela palavra-passe) em QR e em texto;
   restaura-se em Chaves > Importar > Ler QR.
 
+## Ajuda dentro da app
+
+- **Bem-vindo**: na primeira abertura sem chaves, uma explicação curta de como funciona.
+- **Primeiros passos**: no separador Chaves, uma lista (criar chave, backup, trocar chaves,
+  verificar) que se vai riscando sozinha e desaparece quando está tudo feito.
+- **? Ajuda**: em cada separador, explica o que esse ecrã faz.
+- **Lembrete de backup**: cada chave sem backup registado mostra um aviso, e definir o PIN de
+  pânico sem backup pede confirmação. Conta como backup: guardar em ficheiro, imprimir em papel,
+  ou a chave ter sido importada. O registo fica só nas preferências da app.
+
 ## Bloqueio da app
 
 No fim do separador Chaves:

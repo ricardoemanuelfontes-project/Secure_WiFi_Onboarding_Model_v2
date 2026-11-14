@@ -201,6 +201,7 @@ class MainActivity : Activity() {
                 everLoaded = true
                 if (firstTime) show(if (s.myKeys.isEmpty()) 0 else 3) else screens[current].refresh()
                 if (firstTime) warnExpiring(s)
+                if (firstTime) welcome(s)
                 then()
             }) { showOpenFailed(it) }
         }
@@ -410,10 +411,44 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------------ ajuda e primeiros passos
+
+    /** Botão "? Ajuda", no canto de cima de cada separador. */
+    private val helpButton by lazy {
+        Button(this, null, android.R.attr.borderlessButtonStyle).apply {
+            text = "? Ajuda"
+            isAllCaps = false
+            setTextColor(if (isNight) BRAND_RED_LIGHT else BRAND_RED)
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity).setTitle("Ajuda: ${screens[current].title}").setMessage(screens[current].help)
+                    .setPositiveButton("OK", null)
+                    .setNeutralButton("Como funciona") { _, _ -> alert("Como funciona", HOW_IT_WORKS) }
+                    .showSecure()
+            }
+        }
+    }
+
+    /** Na primeira vez que a app abre sem chaves, explica por onde começar. */
+    private fun welcome(s: Snapshot) {
+        if (prefs.getBoolean(PREF_WELCOMED, false)) return
+        prefs.edit().putBoolean(PREF_WELCOMED, true).apply()
+        if (s.myKeys.isNotEmpty()) return // já usavas a app: não precisas da apresentação
+        alert("Bem-vindo ao Reczi cypher", "$HOW_IT_WORKS\n\nNo separador Chaves tens os primeiros passos, por ordem. Em cada separador há um botão \"? Ajuda\".")
+    }
+
+    /** Chaves privadas de que há registo de backup (ficheiro, papel, ou importadas de um backup). */
+    private fun backedUp(): Set<String> = prefs.getStringSet(PREF_BACKED_UP, emptySet()) ?: emptySet()
+
+    private fun markBackedUp(fingerprint: String) {
+        prefs.edit().putStringSet(PREF_BACKED_UP, backedUp() + fingerprint).apply()
+        if (loaded && !locked) screens[current].refresh()
+    }
+
     private fun show(i: Int) {
         current = i
         content.removeAllViews()
         content.addView(screens[i].view)
+        content.addView(helpButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
         screens[i].refresh()
         tabButtons.forEachIndexed { j, b ->
             b.setTypeface(null, if (j == i) Typeface.BOLD else Typeface.NORMAL)
@@ -706,7 +741,10 @@ class MainActivity : Activity() {
                     contentResolver.openOutputStream(uri, "wt")!!.use { it.write(bytes) }
                     // Confirma que ficou bem escrito.
                     if (!readUri(uri).contentEquals(bytes)) throw PgpError("A cópia ficou incompleta. Repete o backup.")
-                }) { alert("Backup", "Cópia da chave privada guardada. Guarda-a num local seguro e offline.") }
+                }) {
+                    markBackedUp(backupFpr)
+                    alert("Backup", "Cópia da chave privada guardada. Guarda-a num local seguro e offline.")
+                }
             }
             REQ_SAVE_FILE -> when {
                 input == null -> work("…", { deleteDocument(uri) }) { alert("Ficheiro", "Não ficou nada guardado. Repete a operação.") }
@@ -987,6 +1025,8 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ separadores
 
     private abstract inner class Screen(val title: String) {
+        /** Explicação curta deste separador, mostrada pelo botão "? Ajuda". */
+        abstract val help: String
         abstract val view: View
         abstract fun refresh()
         open fun clearSensitive() {}
@@ -999,13 +1039,24 @@ class MainActivity : Activity() {
         private val pass1 = passwordField("Palavra-passe (mín. ${Pgp.MIN_PASSPHRASE} caracteres)")
         private val pass2 = passwordField("Repete a palavra-passe")
         private val problems = column(0)
+        private val steps = column(0)
         private val list = column(0)
         private val lockBox = column(0)
         private val col = column()
         override val view: View = scroll(col)
+        override val help get() =
+            "Aqui estão as TUAS chaves. Cada chave tem duas partes: a pública, que dás aos outros para te escreverem, e a privada, " +
+                "que nunca sai do teu telemóvel e abre o que te enviam.\n\n" +
+                "• Partilhar/Copiar pública e Mostrar QR: para dares a tua chave a alguém.\n" +
+                "• Backup da privada / Backup em papel: uma cópia fora do telemóvel. Sem ela, se perderes o telemóvel ou desinstalares a app, " +
+                "perdes tudo o que te enviaram.\n" +
+                "• Prolongar validade: a chave vale 2 anos; prolonga-a e volta a enviar a pública aos contactos.\n" +
+                "• Bloqueio da app (ao fundo): impressão digital, PIN e PIN de pânico.\n\n" +
+                "A palavra-passe da chave não se recupera: se a esqueceres, a chave fica inútil."
 
         init {
             col.addView(problems)
+            col.addView(steps)
             col.addView(heading("As tuas chaves"))
             col.addView(list)
             col.addView(heading("Criar uma chave nova"))
@@ -1077,6 +1128,8 @@ class MainActivity : Activity() {
             ))
             lockBox.addView(buttonRow(*listOfNotNull(
                 button(if (hasPanic) "Mudar PIN de pânico…" else "Definir PIN de pânico…") {
+                    val missing = snap.myKeys.filter { it.info.fingerprint !in backedUp() }
+                    val go = {
                     withCurrentPin {
                         askNewPin("PIN de pânico", "Tem de ser diferente do PIN da app. Escolhe um que não escrevas por engano.") { chars ->
                             changePins({ try { vault.setPanicPin(chars) } finally { chars.fill('\u0000') } }) {
@@ -1084,6 +1137,13 @@ class MainActivity : Activity() {
                             }
                         }
                     }
+                    }
+                    if (missing.isEmpty()) go() else confirm(
+                        "Sem backup",
+                        "Não há backup registado de: ${missing.joinToString(", ") { it.info.userId }}.\n\n" +
+                            "O PIN de pânico apaga tudo sem volta. Faz primeiro o backup, a não ser que já o tenhas noutro sítio.",
+                        "Continuar mesmo assim",
+                    ) { go() }
                 },
                 if (hasPanic) button("Tirar PIN de pânico") { withCurrentPin { changePins({ vault.clearPanicPin() }) } } else null,
             ).toTypedArray()))
@@ -1095,7 +1155,43 @@ class MainActivity : Activity() {
             list.removeAllViews()
             if (snap.myKeys.isEmpty()) list.addView(label("Ainda não tens nenhuma chave."))
             snap.myKeys.forEach { list.addView(keyCard(it)) }
+            refreshSteps()
             refreshLock()
+        }
+
+        /** Primeiros passos: uma lista que se vai riscando sozinha, até estar tudo feito (ou a esconderes). */
+        private fun refreshSteps() {
+            steps.removeAllViews()
+            if (prefs.getBoolean(PREF_STEPS_HIDDEN, false)) return
+            val backed = backedUp()
+            val done = listOf(
+                snap.myKeys.isNotEmpty(),
+                snap.myKeys.isNotEmpty() && snap.myKeys.all { it.info.fingerprint in backed },
+                snap.contacts.isNotEmpty(),
+                snap.contacts.any { it.verified },
+            )
+            if (done.all { it }) return
+            val texts = listOf(
+                "Cria a tua chave (mais abaixo, \"Criar uma chave nova\").",
+                "Faz backup da chave privada para fora do telemóvel (botão \"Backup da privada…\" ou \"Backup em papel…\").",
+                "Troca chaves com alguém: envia-lhe a tua (\"Partilhar pública\" ou \"Mostrar QR\") e importa a dele no separador Contactos.",
+                "Verifica a chave dele: comparem a impressão digital em pessoa ou por chamada. Depois já podes encriptar para ele.",
+            )
+            val c = card()
+            c.addView(TextView(this@MainActivity).apply { text = "Primeiros passos"; setTypeface(null, Typeface.BOLD) })
+            val next = done.indexOf(false)
+            texts.forEachIndexed { i, t ->
+                c.addView(TextView(this@MainActivity).apply {
+                    text = (if (done[i]) "✔ " else "${i + 1}. ") + t
+                    setPadding(0, dp(4), 0, 0)
+                    if (done[i]) { setTextColor(green) } else if (i == next) setTypeface(null, Typeface.BOLD)
+                })
+            }
+            c.addView(button("Esconder") {
+                prefs.edit().putBoolean(PREF_STEPS_HIDDEN, true).apply()
+                refreshSteps()
+            })
+            steps.addView(c)
         }
 
         private fun brokenCard(broken: List<BrokenEntry>): View {
@@ -1131,6 +1227,13 @@ class MainActivity : Activity() {
             c.addView(fingerprintView(info.fingerprint))
             val (v, color) = validity(info)
             c.addView(TextView(this@MainActivity).apply { text = v; color?.let { setTextColor(it) } })
+            if (info.fingerprint !in backedUp()) {
+                c.addView(TextView(this@MainActivity).apply {
+                    text = "⚠ Sem backup registado. Se perderes o telemóvel ou desinstalares a app, perdes esta chave e o que te enviaram."
+                    setTextColor(orange)
+                })
+                c.addView(button("Já tenho backup desta chave") { markBackedUp(info.fingerprint) })
+            }
             val pub = Pgp.armor(Pgp.certificateOf(k.ring))
             c.addView(buttonRow(
                 button("Partilhar pública") { pickFormat(pub) { share(it) } },
@@ -1207,6 +1310,7 @@ class MainActivity : Activity() {
                 change("A importar…", {
                     try { vault.addMyKey(Pgp.prepareImported(key, chars)) } finally { chars.fill('\u0000') }
                 }) {
+                    markBackedUp(info.fingerprint) // veio de um backup: já existe fora do telemóvel
                     alert("Chave importada", "${info.userId}\n${Pgp.prettyFingerprint(info.fingerprint)}") { importNext(queue) }
                 }
             }
@@ -1233,7 +1337,8 @@ class MainActivity : Activity() {
                     Qr.ofKey(ring).second to Pgp.armor(ring)
                 }) { (qr, armored) ->
                     val date = DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.forLanguageTag("pt-PT")).format(Date())
-                    PaperBackup(this@MainActivity, info.userId, info.fingerprint, date, qr, armored).print(this@MainActivity)
+                    PaperBackup(this@MainActivity, info.userId, info.fingerprint, date, qr, armored) { markBackedUp(info.fingerprint) }
+                        .print(this@MainActivity)
                 }
             }
         }
@@ -1263,6 +1368,13 @@ class MainActivity : Activity() {
         private val list = column(0)
         private val col = column()
         override val view: View = scroll(col)
+        override val help get() =
+            "Aqui guardas as chaves PÚBLICAS das pessoas a quem queres escrever.\n\n" +
+                "1. Importa a chave: cola o texto que te enviaram, abre um ficheiro, ou lê o QR do telemóvel da pessoa.\n" +
+                "2. Verifica: comparem a impressão digital (as letras e números) em pessoa ou por chamada. Serve para teres a certeza de que " +
+                "a chave é mesmo dela e não de alguém a meio. Só depois podes encriptar para esse contacto.\n\n" +
+                "Código secreto (opcional): uma frase combinada entre os dois, que fecha as mensagens disfarçadas com uma segunda camada. " +
+                "Os algarismos de confirmação têm de ser iguais nos dois telemóveis. Se mudarem a frase, as mensagens antigas com código deixam de abrir."
 
         init {
             col.addView(heading("Adicionar destinatário"))
@@ -1359,6 +1471,15 @@ class MainActivity : Activity() {
         private var fileJob: Triple<List<String>, String, Boolean>? = null
         private val col = column()
         override val view: View = scroll(col)
+        override val help get() =
+            "Escreve a mensagem, escolhe para quem é e carrega em Encriptar. Depois copia ou partilha o resultado por onde quiseres " +
+                "(mensagens, email...): só os destinatários o conseguem abrir.\n\n" +
+                "• Para: só aparecem contactos verificados. \"Eu\" serve para guardares algo só para ti.\n" +
+                "• Assinar: prova que foste tu a escrever; pede a tua palavra-passe.\n" +
+                "• Formato: \"PGP normal\" abre em qualquer programa mas vê-se que é PGP; os \"Disfarçados\" não parecem PGP e só abrem no Reczi cypher.\n" +
+                "• Código secreto: aparece com um formato disfarçado e um só destinatário com quem combinaste um código.\n" +
+                "• Só assinar: o texto NÃO fica secreto, só leva a tua assinatura.\n" +
+                "• Ficheiros e fotografias: usa os destinatários escolhidos acima e guarda um ficheiro .pgp."
 
         init {
             col.addView(heading("Mensagem"))
@@ -1577,6 +1698,15 @@ class MainActivity : Activity() {
         private val outBox = column(0)
         private val col = column()
         override val view: View = scroll(col)
+        override val help get() =
+            "Cola aqui o que recebeste (ou partilha-o da outra app para o Reczi cypher) e carrega em Desencriptar. " +
+                "A app pede a palavra-passe da tua chave e mostra a mensagem.\n\n" +
+                "Por cima da mensagem aparece quem a assinou:\n" +
+                "• ✔ VERIFICADA: veio de um contacto que verificaste.\n" +
+                "• NÃO VERIFICADA / REMETENTE DESCONHECIDO: não há certeza de quem a enviou.\n" +
+                "• ASSINATURA INVÁLIDA: foi alterada ou é falsa. Não confies.\n\n" +
+                "Copiar apaga o texto da área de transferência ao fim de ~45 s. A mensagem desaparece do ecrã depois de 5 minutos fora da app.\n\n" +
+                "Se disser que não reconhece a mensagem, pode ter vindo com código secreto: confirma os algarismos com o remetente, em Contactos."
 
         init {
             col.addView(heading("Mensagem encriptada"))
@@ -1698,6 +1828,12 @@ class MainActivity : Activity() {
         private var editing: String? = null
         private val col = column()
         override val view: View = scroll(col)
+        override val help get() =
+            "Um bloco de notas só teu. O texto de cada nota fica encriptado para a tua chave.\n\n" +
+                "• Guardar não pede nada; abrir pede a palavra-passe da tua chave.\n" +
+                "• O título fica visível na lista sem palavra-passe: não ponhas lá segredos.\n" +
+                "• As notas vivem só neste telemóvel e não entram no backup da chave. Para guardares uma fora daqui, " +
+                "encripta o texto para ti em Encriptar e guarda o resultado onde quiseres."
 
         init {
             col.addView(heading("Notas"))
@@ -1772,6 +1908,16 @@ class MainActivity : Activity() {
     private companion object {
         const val REQ_OPEN = 1
         const val REQ_SAVE = 2
+        const val PREF_WELCOMED = "welcomed"
+        const val PREF_STEPS_HIDDEN = "stepsHidden"
+        const val PREF_BACKED_UP = "backedUp"
+        const val HOW_IT_WORKS =
+            "O Reczi cypher encripta mensagens de forma que só o destinatário as consegue ler.\n\n" +
+                "Cada pessoa tem uma chave com duas partes. A PÚBLICA é como um cadeado aberto: dás a quem quiseres, e quem a tiver pode " +
+                "fechar mensagens para ti. A PRIVADA é a única que as abre: fica no teu telemóvel, protegida pela tua palavra-passe.\n\n" +
+                "Para falares com alguém: trocam as chaves públicas, confirmam que são as certas (verificar) e, a partir daí, " +
+                "encriptas com a chave dele e ele com a tua. O texto encriptado pode ir por qualquer app de mensagens.\n\n" +
+                "A app não usa a Internet: és tu que copias ou partilhas o que ela produz."
         const val REQ_SAVE_FILE = 3
         const val REQ_UNLOCK = 4
         const val REQ_CAMERA = 5

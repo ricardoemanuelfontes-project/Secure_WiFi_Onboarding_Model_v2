@@ -31,6 +31,8 @@ class PaperBackup(
     private val date: String,
     private val qr: Array<BooleanArray>,
     private val armored: String,
+    /** Chamado quando o documento foi entregue ao serviço de impressão. */
+    private val onPrinted: () -> Unit = {},
 ) : PrintDocumentAdapter() {
     private var pdf: PrintedPdfDocument? = null
     private var attributes: PrintAttributes? = null
@@ -56,6 +58,7 @@ class PaperBackup(
             draw(doc)
             FileOutputStream(destination.fileDescriptor).use { doc.writeTo(it) }
             callback.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
+            onPrinted()
         } catch (e: Exception) {
             callback.onWriteFailed(e.javaClass.simpleName)
         } finally {
