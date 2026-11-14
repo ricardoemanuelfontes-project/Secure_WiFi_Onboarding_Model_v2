@@ -182,35 +182,46 @@ class Vault(private val store: Store) {
         load(VERIFIED)?.toString(Charsets.UTF_8)?.lines()?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
 
     /**
-     * Encripta para os destinatários indicados (têm de estar verificados) e para ti próprio,
-     * para conseguires reler o que enviaste. Assina se [sign].
+     * Encripta para os destinatários indicados e para ti próprio, para conseguires reler o que
+     * enviaste. Os destinatários podem ser contactos (têm de estar verificados) ou chaves tuas
+     * (p. ex. para guardar uma nota só para ti). Assina se [sign].
      */
     fun encrypt(text: String, recipientFprs: List<String>, myFpr: String, sign: Boolean, passphrase: CharArray?): String {
         if (text.isEmpty()) throw PgpError("Escreve primeiro a mensagem.")
+        if (recipientFprs.isEmpty()) throw PgpError("Escolhe pelo menos um destinatário.")
         val snap = snapshot()
         val contacts = snap.contacts.associateBy { it.info.fingerprint }
-        val recipients = recipientFprs.map { fpr ->
+        val mine = snap.myKeys.associateBy { it.info.fingerprint }
+        val me = mine[myFpr]?.ring ?: throw PgpError("Chave não encontrada.")
+        val recipients = (recipientFprs + myFpr).distinct().map { fpr ->
+            val own = mine[fpr]
+            if (own != null) {
+                if (!own.info.canEncrypt) throw PgpError("A tua chave ${own.info.userId} expirou ou foi revogada.")
+                return@map Pgp.certificateOf(own.ring)
+            }
             val c = contacts[fpr] ?: throw PgpError("Destinatário desconhecido.")
             if (!c.verified) throw PgpError("Ainda não verificaste a chave de ${c.info.userId}.")
             if (c.info.revoked) throw PgpError("A chave de ${c.info.userId} foi REVOGADA.")
             if (!c.info.canEncrypt) throw PgpError("A chave de ${c.info.userId} expirou.")
             c.cert
         }
-        if (recipients.isEmpty()) throw PgpError("Escolhe pelo menos um destinatário.")
-        val me = snap.myKeys.firstOrNull { it.info.fingerprint == myFpr }?.ring ?: throw PgpError("Chave não encontrada.")
-        // PGPPublicKeyRing é Iterable: "lista + chave" juntaria as subchaves, por isso usa-se add().
-        val all = recipients.toMutableList<PGPPublicKeyRing>().apply { add(Pgp.certificateOf(me)) }
-        return Pgp.encrypt(text, all, if (sign) me else null, passphrase)
+        return Pgp.encrypt(text, recipients, if (sign) me else null, passphrase)
     }
 
-    /** true se a mensagem foi encriptada para uma das tuas chaves (ou para um destinatário oculto). */
-    fun isForMe(message: String): Boolean {
+    /**
+     * true se a mensagem foi encriptada para uma das tuas chaves (ou para um destinatário oculto).
+     * Aceita mensagens normais e disfarçadas (ver [Disguise]).
+     */
+    fun isForMe(text: String): Boolean {
+        val message = Pgp.undisguise(text) ?: text
         val ids = Pgp.recipientKeyIds(message)
         val mine = snapshot().myKeys.flatMap { Pgp.keyIds(it.ring) }.toSet()
         return ids.any { it == 0L || it in mine }
     }
 
-    fun decrypt(message: String, passphrase: CharArray): DecryptResult {
+    /** Desencripta uma mensagem normal ou disfarçada (ver [Disguise]). */
+    fun decrypt(text: String, passphrase: CharArray): DecryptResult {
+        val message = Pgp.undisguise(text) ?: text
         val snap = snapshot()
         val myKeys = snap.myKeys.map { it.ring }
         if (myKeys.isEmpty()) throw PgpError("Ainda não tens nenhuma chave privada.")

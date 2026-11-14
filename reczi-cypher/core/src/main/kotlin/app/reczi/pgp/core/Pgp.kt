@@ -316,6 +316,25 @@ object Pgp {
         return out.toString(Charsets.US_ASCII.name())
     }
 
+    /** Converte texto ASCII-armor (mensagem ou chave) nos bytes binários OpenPGP. */
+    fun dearmor(armored: String): ByteArray = try {
+        org.bouncycastle.openpgp.PGPUtil.getDecoderStream(armored.toByteArray(Charsets.UTF_8).inputStream()).use { it.readBytes() }
+    } catch (e: Exception) {
+        throw PgpError("Não reconheço isto como PGP.", e)
+    }
+
+    /** Disfarça uma mensagem ou chave PGP (armorada) para não parecer PGP. Ver [Disguise]. */
+    fun disguise(armored: String): String = Disguise.hide(dearmor(armored))
+
+    /**
+     * Se [text] for um texto disfarçado pela app, devolve-o como PGP normal (ASCII-armor);
+     * caso contrário devolve null.
+     */
+    fun undisguise(text: String): String? {
+        val bytes = Disguise.reveal(text) ?: return null
+        return runCatching { ensureArmored(bytes) }.getOrNull()
+    }
+
     /** Ids (64 bits) das chaves para as quais a mensagem foi encriptada (0 = destinatário oculto). */
     fun recipientKeyIds(message: String): List<Long> = try {
         MessageInspector.determineEncryptionInfoForMessage(message).keyIds
