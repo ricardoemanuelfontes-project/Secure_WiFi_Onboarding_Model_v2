@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sem acesso à Internet nem a nada do telemóvel. A única permissão serve para esconder
+     janelas de outras apps por cima desta (Android 12+), contra ataques de sobreposição. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
+
+    <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="reczi-pgp"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Reczi">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Recebe texto partilhado de outras apps (mensagens e chaves públicas). -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Limpa a área de transferência depois de copiar texto desencriptado. -->
+        <receiver
+            android:name=".ClipboardClearReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

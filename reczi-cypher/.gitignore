@@ -1,0 +1,11 @@
+# Nunca publicar a chave de assinatura da app
+keystore.properties
+signing/
+# Build
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+.idea/
+*.iml
