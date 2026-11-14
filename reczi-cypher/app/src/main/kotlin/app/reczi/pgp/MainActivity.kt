@@ -87,6 +87,12 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private val tabButtons = mutableListOf<Button>()
     private lateinit var screens: List<Screen>
+    private lateinit var messages: MessagesScreen
+    private lateinit var contacts: ContactsScreen
+    private lateinit var notes: NotesScreen
+    private lateinit var keys: KeysScreen
+    private lateinit var enc: EncryptScreen
+    private lateinit var dec: DecryptScreen
     private var current = 0
 
     // Pedidos ao seletor de ficheiros: guardados no estado para sobreviverem à recriação da atividade.
@@ -119,7 +125,14 @@ class MainActivity : Activity() {
         pendingSave = savedInstanceState?.getString(STATE_SAVE)
         pendingScan = savedInstanceState?.getString(STATE_SCAN)
 
-        screens = listOf(KeysScreen(), ContactsScreen(), EncryptScreen(), DecryptScreen(), NotesScreen())
+        enc = EncryptScreen()
+        dec = DecryptScreen()
+        messages = MessagesScreen()
+        contacts = ContactsScreen()
+        notes = NotesScreen()
+        keys = KeysScreen()
+        // Encriptar e Desencriptar vivem dentro de "Mensagens"; o último separador (⚙) são as definições.
+        screens = listOf(messages, contacts, notes, keys, SettingsScreen())
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -128,10 +141,11 @@ class MainActivity : Activity() {
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(BRAND_BLACK) }
         screens.forEachIndexed { i, s ->
             val b = Button(this, null, android.R.attr.buttonBarButtonStyle).apply {
-                text = s.title
+                text = s.tab
+                contentDescription = s.title
                 isAllCaps = false
                 setTextColor(Color.WHITE)
-                // Cinco separadores: o texto encolhe para caber numa linha em ecrãs estreitos.
+                // O texto encolhe para caber numa linha em ecrãs estreitos.
                 maxLines = 1
                 minWidth = 0
                 minimumWidth = 0
@@ -140,7 +154,7 @@ class MainActivity : Activity() {
                 setOnClickListener { if (loaded && !locked) show(i) }
             }
             tabButtons += b
-            bar.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            bar.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, if (s.tab.length <= 2) 0.5f else 1f))
         }
         content = FrameLayout(this)
         root.addView(bar)
@@ -199,7 +213,7 @@ class MainActivity : Activity() {
                 snap = s
                 loaded = true
                 everLoaded = true
-                if (firstTime) show(if (s.myKeys.isEmpty()) 0 else 3) else screens[current].refresh()
+                if (firstTime) show(if (s.myKeys.isEmpty()) TAB_KEYS else TAB_MESSAGES) else screens[current].refresh()
                 if (firstTime) warnExpiring(s)
                 if (firstTime) welcome(s)
                 then()
@@ -397,17 +411,28 @@ class MainActivity : Activity() {
         val text = runCatching { intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim() }.getOrNull()
         setIntent(Intent(this, MainActivity::class.java))
         if (text.isNullOrEmpty()) return alert("Partilha", "Não recebi texto. Partilha a mensagem ou a chave como texto.")
-        // Texto disfarçado (pela app ou com um código secreto): vê-se primeiro o que está por baixo.
-        work("A ler…", { vault.reveal(text)?.armored }) { plain -> routeShared(plain ?: text, text) }
+        route(text, "Partilha")
     }
 
-    private fun routeShared(text: String, original: String) {
-        when {
-            // A mensagem fica como chegou: o cofre tira o disfarce ao desencriptar.
-            "BEGIN PGP MESSAGE" in text || "BEGIN PGP SIGNED MESSAGE" in text -> { show(3); (screens[3] as DecryptScreen).setMessage(original) }
-            "BEGIN PGP PUBLIC KEY BLOCK" in text -> { show(1); (screens[1] as ContactsScreen).input.setText(text) }
-            "BEGIN PGP PRIVATE KEY BLOCK" in text -> alert("Partilha", "Por segurança, importa chaves privadas a partir de um ficheiro, no separador Chaves.")
-            else -> { show(2); (screens[2] as EncryptScreen).draft.setText(text) }
+    /** "Colar e detetar": vê o que está na área de transferência e leva-o para o sítio certo. */
+    private fun pasteAndRoute() {
+        val text = pasteText().trim()
+        if (text.isEmpty()) return alert("Colar", "A área de transferência está vazia. Copia primeiro a mensagem ou a chave na outra app.")
+        route(text, "Colar")
+    }
+
+    /** Leva um texto recebido (partilhado ou colado) para o ecrã certo: mensagem, chave ou texto por encriptar. */
+    private fun route(original: String, title: String) {
+        // Texto disfarçado (pela app ou com um código secreto): vê-se primeiro o que está por baixo.
+        work("A ler…", { vault.reveal(original)?.armored }) { plain ->
+            val text = plain ?: original
+            when {
+                // A mensagem fica como chegou: o cofre tira o disfarce ao desencriptar.
+                "BEGIN PGP MESSAGE" in text || "BEGIN PGP SIGNED MESSAGE" in text -> { dec.setMessage(original); messages.open(write = false) }
+                "BEGIN PGP PUBLIC KEY BLOCK" in text -> { show(TAB_CONTACTS); contacts.input.setText(text) }
+                "BEGIN PGP PRIVATE KEY BLOCK" in text -> alert(title, "Por segurança, importa chaves privadas a partir de um ficheiro, no separador Chaves.")
+                else -> { enc.draft.setText(text); messages.open(write = true) }
+            }
         }
     }
 
@@ -433,7 +458,7 @@ class MainActivity : Activity() {
         if (prefs.getBoolean(PREF_WELCOMED, false)) return
         prefs.edit().putBoolean(PREF_WELCOMED, true).apply()
         if (s.myKeys.isNotEmpty()) return // já usavas a app: não precisas da apresentação
-        alert("Bem-vindo ao Reczi cypher", "$HOW_IT_WORKS\n\nNo separador Chaves tens os primeiros passos, por ordem. Em cada separador há um botão \"? Ajuda\".")
+        alert("Bem-vindo ao Reczi cypher", "$HOW_IT_WORKS\n\nNo separador Chaves tens os primeiros passos, por ordem. O bloqueio da app está no separador ⚙. Em cada separador há um botão \"? Ajuda\".")
     }
 
     /** Chaves privadas de que há registo de backup (ficheiro, papel, ou importadas de um backup). */
@@ -614,6 +639,9 @@ class MainActivity : Activity() {
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
     }
 
+    /** A impressão digital em palavras, cinco por linha. */
+    private fun wordsOf(fingerprint: String) = Pgp.fingerprintWords(fingerprint).chunked(5).joinToString("\n") { it.joinToString(" ") }
+
     /** Mostra a impressão digital (primeiro, em grande) e pede a confirmação de que coincide. */
     private fun showFingerprintAndVerify(info: KeyInfo) {
         val box = column(dp(20))
@@ -625,8 +653,9 @@ class MainActivity : Activity() {
         })
         box.addView(nameView(info.userId))
         box.addView(TextView(this).apply {
-            text = "\nConfirma esta impressão digital com o dono da chave por outro meio " +
-                "(em pessoa, chamada de voz...). Só carrega em \"Coincide\" se for exatamente igual."
+            text = "\nA mesma impressão digital em palavras (mais fácil de ler em voz alta):\n\n${wordsOf(info.fingerprint)}\n\n" +
+                "Confirma-a com o dono da chave por outro meio (em pessoa, chamada de voz...): as letras e números ou as palavras, " +
+                "tanto faz, mas todas. Ele vê as dele em Chaves > Mostrar QR. Só carrega em \"Coincide\" se for exatamente igual."
         })
         val d = AlertDialog.Builder(this).setTitle("Verificar destinatário").setView(scroll(box))
             .setPositiveButton("Coincide") { _, _ ->
@@ -723,9 +752,9 @@ class MainActivity : Activity() {
                 }
                 else -> work("A ler o ficheiro…", { readUri(uri) }) { bytes ->
                     when (kind) {
-                        KIND_PRIVATE -> (screens[0] as KeysScreen).importPrivate(bytes)
-                        KIND_PUBLIC -> (screens[1] as ContactsScreen).importPublic(bytes)
-                        KIND_MESSAGE -> (screens[3] as DecryptScreen).loadFile(bytes)
+                        KIND_PRIVATE -> keys.importPrivate(bytes)
+                        KIND_PUBLIC -> contacts.importPublic(bytes)
+                        KIND_MESSAGE -> dec.loadFile(bytes)
                     }
                 }
             }
@@ -748,8 +777,8 @@ class MainActivity : Activity() {
             }
             REQ_SAVE_FILE -> when {
                 input == null -> work("…", { deleteDocument(uri) }) { alert("Ficheiro", "Não ficou nada guardado. Repete a operação.") }
-                saveKind == KIND_FILE_ENC -> (screens[2] as EncryptScreen).runFileJob(input, uri)
-                else -> (screens[3] as DecryptScreen).decryptFile(input, uri)
+                saveKind == KIND_FILE_ENC -> enc.runFileJob(input, uri)
+                else -> dec.decryptFile(input, uri)
             }
         }
     }
@@ -815,11 +844,11 @@ class MainActivity : Activity() {
     private fun handleQr(kind: String?, text: String) {
         val bytes = Disguise.reveal(text) ?: return alert("QR", "Este código QR não é do Reczi cypher.")
         if (kind == KIND_QR_PRIVATE) {
-            show(0)
-            (screens[0] as KeysScreen).importPrivate(bytes)
+            show(TAB_KEYS)
+            keys.importPrivate(bytes)
         } else {
-            show(1)
-            (screens[1] as ContactsScreen).importPublic(bytes)
+            show(TAB_CONTACTS)
+            contacts.importPublic(bytes)
         }
     }
 
@@ -906,7 +935,7 @@ class MainActivity : Activity() {
                     "Código secreto guardado",
                     "Confirmação: $check\n\nNa app de ${c.info.userId} têm de aparecer os mesmos algarismos. " +
                         "Se forem diferentes, um dos dois escreveu a frase de outra maneira.\n\n" +
-                        "Para o usar: em Encriptar, escolhe um formato disfarçado e só este destinatário."
+                        "Para o usar: em Mensagens > Escrever, escolhe um formato disfarçado e só este destinatário."
                 )
             }
         }
@@ -1025,6 +1054,8 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ separadores
 
     private abstract inner class Screen(val title: String) {
+        /** O que aparece no separador (por omissão, o título). */
+        open val tab: String get() = title
         /** Explicação curta deste separador, mostrada pelo botão "? Ajuda". */
         abstract val help: String
         abstract val view: View
@@ -1041,7 +1072,6 @@ class MainActivity : Activity() {
         private val problems = column(0)
         private val steps = column(0)
         private val list = column(0)
-        private val lockBox = column(0)
         private val col = column()
         override val view: View = scroll(col)
         override val help get() =
@@ -1051,7 +1081,7 @@ class MainActivity : Activity() {
                 "• Backup da privada / Backup em papel: uma cópia fora do telemóvel. Sem ela, se perderes o telemóvel ou desinstalares a app, " +
                 "perdes tudo o que te enviaram.\n" +
                 "• Prolongar validade: a chave vale 2 anos; prolonga-a e volta a enviar a pública aos contactos.\n" +
-                "• Bloqueio da app (ao fundo): impressão digital, PIN e PIN de pânico.\n\n" +
+                "• Mostrar QR também mostra a impressão digital em palavras, para a confirmares com os teus contactos.\n\n" +
                 "A palavra-passe da chave não se recupera: se a esqueceres, a chave fica inútil."
 
         init {
@@ -1073,80 +1103,6 @@ class MainActivity : Activity() {
                 },
                 button("Ler QR") { scanQr(KIND_QR_PRIVATE) },
             ))
-            col.addView(heading("Bloqueio da app"))
-            col.addView(lockBox)
-        }
-
-        private fun refreshLock() {
-            lockBox.removeAllViews()
-            lockBox.addView(label(
-                "O bloqueio trava quem pegar no telemóvel desbloqueado: pede-se ao abrir a app e depois de 1 minuto fora dela. " +
-                    "A palavra-passe da chave continua a ser pedida para assinar e desencriptar."
-            ))
-            lockBox.addView(CheckBox(this@MainActivity).apply {
-                text = "Desbloquear com a impressão digital (ou o bloqueio do telemóvel)"
-                isChecked = prefs.getBoolean(PREF_LOCK_BIO, false)
-                setOnClickListener {
-                    val on = isChecked
-                    val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-                    if (on && km?.isDeviceSecure != true) {
-                        isChecked = false
-                        alert("Bloqueio", "O telemóvel não tem bloqueio de ecrã. Define primeiro um PIN, padrão ou impressão digital nas definições do Android.")
-                    } else if (!on && hasPin) {
-                        // Desligar a alternativa não precisa de confirmação: o PIN da app continua a proteger.
-                        prefs.edit().putBoolean(PREF_LOCK_BIO, false).apply()
-                    } else {
-                        prefs.edit().putBoolean(PREF_LOCK_BIO, on).apply()
-                    }
-                }
-            })
-            if (!hasPin) {
-                lockBox.addView(button("Definir um PIN da app…") {
-                    askNewPin(
-                        "PIN da app",
-                        "Um PIN só desta app. Se te esqueceres dele e não tiveres a impressão digital ligada acima, a única saída é " +
-                            "reinstalar a app, e perdes o que não tiver backup.",
-                    ) { chars -> changePins({ try { vault.setPin(chars) } finally { chars.fill('\u0000') } }) }
-                })
-                return
-            }
-            lockBox.addView(label("✔ PIN da app definido."))
-            lockBox.addView(buttonRow(
-                button("Mudar PIN…") {
-                    withCurrentPin {
-                        askNewPin("PIN novo", "") { chars -> changePins({ try { vault.setPin(chars) } finally { chars.fill('\u0000') } }) }
-                    }
-                },
-                button("Tirar PIN") {
-                    withCurrentPin { changePins({ vault.clearPin() }) }
-                },
-            ))
-            lockBox.addView(label(
-                (if (hasPanic) "✔ PIN de pânico definido. " else "") +
-                    "PIN de pânico: se o escreveres no ecrã de bloqueio, a app APAGA TUDO (chaves, contactos, notas e códigos) e abre vazia, " +
-                    "como se fosse nova. Não há volta: só recuperas o que tiveres em backup."
-            ))
-            lockBox.addView(buttonRow(*listOfNotNull(
-                button(if (hasPanic) "Mudar PIN de pânico…" else "Definir PIN de pânico…") {
-                    val missing = snap.myKeys.filter { it.info.fingerprint !in backedUp() }
-                    val go = {
-                    withCurrentPin {
-                        askNewPin("PIN de pânico", "Tem de ser diferente do PIN da app. Escolhe um que não escrevas por engano.") { chars ->
-                            changePins({ try { vault.setPanicPin(chars) } finally { chars.fill('\u0000') } }) {
-                                alert("PIN de pânico", "Guardado. Confirma que tens backup da chave privada fora do telemóvel.")
-                            }
-                        }
-                    }
-                    }
-                    if (missing.isEmpty()) go() else confirm(
-                        "Sem backup",
-                        "Não há backup registado de: ${missing.joinToString(", ") { it.info.userId }}.\n\n" +
-                            "O PIN de pânico apaga tudo sem volta. Faz primeiro o backup, a não ser que já o tenhas noutro sítio.",
-                        "Continuar mesmo assim",
-                    ) { go() }
-                },
-                if (hasPanic) button("Tirar PIN de pânico") { withCurrentPin { changePins({ vault.clearPanicPin() }) } } else null,
-            ).toTypedArray()))
         }
 
         override fun refresh() {
@@ -1156,7 +1112,6 @@ class MainActivity : Activity() {
             if (snap.myKeys.isEmpty()) list.addView(label("Ainda não tens nenhuma chave."))
             snap.myKeys.forEach { list.addView(keyCard(it)) }
             refreshSteps()
-            refreshLock()
         }
 
         /** Primeiros passos: uma lista que se vai riscando sozinha, até estar tudo feito (ou a esconderes). */
@@ -1243,7 +1198,8 @@ class MainActivity : Activity() {
                 button("Mostrar QR") {
                     showQr(
                         "A tua chave pública", Pgp.certificateOf(k.ring),
-                        "${info.userId}\n${Pgp.prettyFingerprint(info.fingerprint)}\n\nO teu contacto lê este código em Contactos > Ler QR. " +
+                        "${info.userId}\n${Pgp.prettyFingerprint(info.fingerprint)}\n\nEm palavras:\n${wordsOf(info.fingerprint)}\n\n" +
+                            "O teu contacto lê este código em Contactos > Ler QR. " +
                             "Depois confirmem os dois que a impressão digital acima é a mesma que aparece no telemóvel dele.",
                     )
                 },
@@ -1370,14 +1326,17 @@ class MainActivity : Activity() {
         override val view: View = scroll(col)
         override val help get() =
             "Aqui guardas as chaves PÚBLICAS das pessoas a quem queres escrever.\n\n" +
+                "Convidar: envia a tua chave pública com instruções para quem ainda não usa a app.\n" +
                 "1. Importa a chave: cola o texto que te enviaram, abre um ficheiro, ou lê o QR do telemóvel da pessoa.\n" +
                 "2. Verifica: comparem a impressão digital (as letras e números) em pessoa ou por chamada. Serve para teres a certeza de que " +
                 "a chave é mesmo dela e não de alguém a meio. Só depois podes encriptar para esse contacto.\n\n" +
+                "Conversa: abre as Mensagens já viradas para esse contacto, com o formato e o código secreto que usaste da última vez.\n\n" +
                 "Código secreto (opcional): uma frase combinada entre os dois, que fecha as mensagens disfarçadas com uma segunda camada. " +
                 "Os algarismos de confirmação têm de ser iguais nos dois telemóveis. Se mudarem a frase, as mensagens antigas com código deixam de abrir."
 
         init {
             col.addView(heading("Adicionar destinatário"))
+            col.addView(button("Convidar alguém (envia a tua chave com instruções)…") { invite() })
             col.addView(input)
             col.addView(buttonRow(
                 button("Colar") { input.setText(pasteText()) },
@@ -1396,6 +1355,22 @@ class MainActivity : Activity() {
             contacts.forEach { list.addView(contactCard(it)) }
         }
 
+        /** Partilha a tua chave pública com um texto que explica à outra pessoa o que fazer. */
+        private fun invite() {
+            val mine = snap.myKeys.firstOrNull { it.info.canEncrypt }
+                ?: return alert("Convidar", "Cria primeiro a tua chave no separador Chaves.")
+            share(
+                "Olá! Quero trocar mensagens encriptadas contigo com a app Reczi cypher.\n\n" +
+                    "1. Instala o Reczi cypher (eu envio-te a app).\n" +
+                    "2. No separador Chaves, cria a tua chave.\n" +
+                    "3. Partilha esta mensagem inteira para o Reczi cypher (ou copia-a e usa \"Colar e detetar\") e carrega em Importar: " +
+                    "a minha chave fica nos teus Contactos.\n" +
+                    "4. Envia-me a tua chave: Chaves > Partilhar pública.\n" +
+                    "5. Depois confirmamos as impressões digitais por chamada ou em pessoa.\n\n" +
+                    "A minha chave (${mine.info.userId}):\n\n" + Pgp.armor(Pgp.certificateOf(mine.ring))
+            )
+        }
+
         private fun contactCard(c: Contact): View {
             val v = card()
             v.addView(nameView(c.info.userId))
@@ -1410,6 +1385,7 @@ class MainActivity : Activity() {
                 text = "✔ Código secreto combinado (confirmação: ${c.codeCheck})"
                 setTextColor(green)
             })
+            if (c.verified && c.info.canEncrypt) v.addView(primaryButton("Conversa") { messages.converse(c.info.fingerprint) })
             if (c.verified) v.addView(buttonRow(*listOfNotNull(
                 button(if (c.codeCheck == null) "Código secreto…" else "Mudar código…") { askSecretCode(c) },
                 if (c.codeCheck == null) null else button("Tirar código") {
@@ -1434,7 +1410,10 @@ class MainActivity : Activity() {
             if (data.isEmpty()) return
             change("A importar…", {
                 // Uma chave disfarçada pela app volta primeiro a PGP normal.
-                val plain = vault.reveal(String(data, Charsets.UTF_8))?.armored?.toByteArray() ?: data
+                // Uma chave no meio de outro texto (um convite com instruções): fica só a chave.
+                val text = String(data, Charsets.UTF_8)
+                val plain = vault.reveal(text)?.armored?.toByteArray()
+                    ?: if ("BEGIN PGP PUBLIC KEY BLOCK" in text) Pgp.extractPublicKeys(text).toByteArray() else data
                 vault.importContacts(Pgp.parseCertificates(plain))
             }) { r ->
                 input.setText("")
@@ -1540,6 +1519,9 @@ class MainActivity : Activity() {
 
         /** Prepara uma resposta: fica escolhido só este destinatário. */
         fun replyTo(fingerprint: String) {
+            // O formato e a opção do código secreto usados da última vez com este contacto.
+            prefs.getInt(PREF_CONTACT_FORMAT + fingerprint, -1).takeIf { it in FORMATS.indices }?.let { format.setSelection(it) }
+            if (prefs.contains(PREF_CONTACT_CODE + fingerprint)) useCode.isChecked = prefs.getBoolean(PREF_CONTACT_CODE + fingerprint, true)
             preselect = setOf(fingerprint)
             draft.setText("")
             output.setText("")
@@ -1604,6 +1586,11 @@ class MainActivity : Activity() {
                 me == null && snap.myKeys.isNotEmpty() -> return alert("Encriptar", "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves.")
                 me == null -> return alert("Encriptar", "Cria primeiro a tua chave no separador Chaves.")
                 to.isEmpty() -> return alert("Encriptar", "Escolhe pelo menos um destinatário (podes escolher-te a ti).")
+            }
+            // Com um só contacto (além de ti), lembra o formato e o código para a próxima conversa com ele.
+            val mine = snap.myKeys.map { it.info.fingerprint }.toSet()
+            to.filterNot { it in mine }.singleOrNull()?.let { other ->
+                prefs.edit().putInt(PREF_CONTACT_FORMAT + other, fmt).putBoolean(PREF_CONTACT_CODE + other, useCode.isChecked).apply()
             }
             val run = { chars: CharArray? ->
                 work("A encriptar…", {
@@ -1671,7 +1658,7 @@ class MainActivity : Activity() {
                     alert(
                         "Ficheiro encriptado",
                         "Ficou guardado onde escolheste (.pgp). Abre em qualquer programa OpenPGP e no Reczi cypher " +
-                            "(Desencriptar > Desencriptar um ficheiro). O ficheiro original não foi apagado."
+                            "(Mensagens > Ler > Desencriptar um ficheiro). O ficheiro original não foi apagado."
                     )
                 }
             }
@@ -1693,7 +1680,7 @@ class MainActivity : Activity() {
         private val output = TextView(this@MainActivity).apply { setTextIsSelectable(false); textSize = 16f }
         private var replyFpr: String? = null
         private val reply = button("Responder") {
-            replyFpr?.let { fpr -> (screens[2] as EncryptScreen).replyTo(fpr); show(2) }
+            replyFpr?.let { fpr -> enc.replyTo(fpr); messages.open(write = true) }
         }.apply { visibility = View.GONE }
         private val outBox = column(0)
         private val col = column()
@@ -1764,7 +1751,7 @@ class MainActivity : Activity() {
             outBox.visibility = View.GONE
         }
 
-        private fun decrypt() {
+        fun decrypt() {
             val msg = fileMessage ?: input.text.toString().trim()
             if (msg.isEmpty()) return
             clearSensitive()
@@ -1819,6 +1806,180 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Mensagens: junta "Escrever" (encriptar) e "Ler" (desencriptar) num só separador, com o
+     * "Colar e detetar" por cima. Numa conversa, fica virado para um contacto.
+     */
+    private inner class MessagesScreen : Screen("Mensagens") {
+        private var writing = false
+        /** Contacto da conversa aberta (botão "Conversa" nos Contactos), se houver. */
+        private var conversation: String? = null
+        private val banner = column(0)
+        private val readTab = button("Ler") { open(write = false) }
+        private val writeTab = button("Escrever") { open(write = true) }
+        private val body = FrameLayout(this@MainActivity)
+        override val view: View = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            val top = column().apply { setPadding(dp(16), dp(8), dp(16), 0) }
+            // A largura fica curta para não ficar por baixo do botão "? Ajuda".
+            top.addView(button("Colar e detetar") { pasteAndRoute() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            top.addView(banner)
+            top.addView(buttonRow(readTab, writeTab))
+            addView(top)
+            addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        override val help get() =
+            "\"Colar e detetar\" vê o que copiaste noutra app: uma mensagem vai para Ler, uma chave para os Contactos, um texto normal para Escrever.\n\n" +
+                (if (writing) "ESCREVER\n" + enc.help else "LER\n" + dec.help)
+
+        fun open(write: Boolean) {
+            writing = write
+            show(TAB_MESSAGES)
+        }
+
+        /** Abre uma conversa: Escrever já com este contacto, e um atalho para colar o que ele enviou. */
+        fun converse(fingerprint: String) {
+            conversation = fingerprint
+            enc.replyTo(fingerprint)
+            open(write = true)
+        }
+
+        override fun refresh() {
+            banner.removeAllViews()
+            val c = snap.contacts.firstOrNull { it.info.fingerprint == conversation && it.verified }
+            if (c == null) {
+                conversation = null
+            } else {
+                banner.addView(nameView("Conversa com ${c.info.userId}"))
+                banner.addView(buttonRow(
+                    button("Colar o que recebi") {
+                        val text = pasteText().trim()
+                        if (text.isEmpty()) return@button alert("Colar", "A área de transferência está vazia. Copia primeiro a mensagem na outra app.")
+                        dec.setMessage(text)
+                        open(write = false)
+                        dec.decrypt()
+                    },
+                    button("Responder") { enc.replyTo(c.info.fingerprint); open(write = true) },
+                    button("Sair") { conversation = null; refresh() },
+                ))
+            }
+            val active = if (writing) enc else dec
+            if (body.getChildAt(0) !== active.view) {
+                body.removeAllViews()
+                body.addView(active.view)
+            }
+            active.refresh()
+            for ((b, on) in listOf(readTab to !writing, writeTab to writing)) {
+                b.setTypeface(null, if (on) Typeface.BOLD else Typeface.NORMAL)
+                b.alpha = if (on) 1f else 0.6f
+            }
+        }
+
+        override fun clearSensitive() {
+            enc.clearSensitive()
+            dec.clearSensitive()
+        }
+    }
+
+    /** Definições: o bloqueio da app e a ajuda geral. */
+    private inner class SettingsScreen : Screen("Definições") {
+        override val tab get() = "⚙"
+        private val lockBox = column(0)
+        private val col = column()
+        override val view: View = scroll(col)
+        override val help get() =
+            "Bloqueio da app: trava quem pegar no telemóvel desbloqueado.\n\n" +
+                "• Impressão digital / bloqueio do telemóvel: a forma mais cómoda.\n" +
+                "• PIN da app: um PIN só desta app. Se o esqueceres sem teres a impressão digital ligada, só reinstalando.\n" +
+                "• PIN de pânico: escrito no ecrã de bloqueio, APAGA TUDO e abre a app vazia. Não há volta.\n\n" +
+                "O bloqueio não substitui a palavra-passe da chave, que continua a ser pedida para assinar e desencriptar."
+
+        init {
+            col.addView(heading("Bloqueio da app"))
+            col.addView(lockBox)
+            col.addView(heading("Ajuda"))
+            col.addView(button("Como funciona") { alert("Como funciona", HOW_IT_WORKS) })
+            col.addView(button("Mostrar de novo os primeiros passos") {
+                prefs.edit().remove(PREF_STEPS_HIDDEN).apply()
+                show(TAB_KEYS)
+            })
+        }
+
+        override fun refresh() = refreshLock()
+
+        private fun refreshLock() {
+            lockBox.removeAllViews()
+            lockBox.addView(label(
+                "O bloqueio trava quem pegar no telemóvel desbloqueado: pede-se ao abrir a app e depois de 1 minuto fora dela. " +
+                    "A palavra-passe da chave continua a ser pedida para assinar e desencriptar."
+            ))
+            lockBox.addView(CheckBox(this@MainActivity).apply {
+                text = "Desbloquear com a impressão digital (ou o bloqueio do telemóvel)"
+                isChecked = prefs.getBoolean(PREF_LOCK_BIO, false)
+                setOnClickListener {
+                    val on = isChecked
+                    val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+                    if (on && km?.isDeviceSecure != true) {
+                        isChecked = false
+                        alert("Bloqueio", "O telemóvel não tem bloqueio de ecrã. Define primeiro um PIN, padrão ou impressão digital nas definições do Android.")
+                    } else if (!on && hasPin) {
+                        // Desligar a alternativa não precisa de confirmação: o PIN da app continua a proteger.
+                        prefs.edit().putBoolean(PREF_LOCK_BIO, false).apply()
+                    } else {
+                        prefs.edit().putBoolean(PREF_LOCK_BIO, on).apply()
+                    }
+                }
+            })
+            if (!hasPin) {
+                lockBox.addView(button("Definir um PIN da app…") {
+                    askNewPin(
+                        "PIN da app",
+                        "Um PIN só desta app. Se te esqueceres dele e não tiveres a impressão digital ligada acima, a única saída é " +
+                            "reinstalar a app, e perdes o que não tiver backup.",
+                    ) { chars -> changePins({ try { vault.setPin(chars) } finally { chars.fill('\u0000') } }) }
+                })
+                return
+            }
+            lockBox.addView(label("✔ PIN da app definido."))
+            lockBox.addView(buttonRow(
+                button("Mudar PIN…") {
+                    withCurrentPin {
+                        askNewPin("PIN novo", "") { chars -> changePins({ try { vault.setPin(chars) } finally { chars.fill('\u0000') } }) }
+                    }
+                },
+                button("Tirar PIN") {
+                    withCurrentPin { changePins({ vault.clearPin() }) }
+                },
+            ))
+            lockBox.addView(label(
+                (if (hasPanic) "✔ PIN de pânico definido. " else "") +
+                    "PIN de pânico: se o escreveres no ecrã de bloqueio, a app APAGA TUDO (chaves, contactos, notas e códigos) e abre vazia, " +
+                    "como se fosse nova. Não há volta: só recuperas o que tiveres em backup."
+            ))
+            lockBox.addView(buttonRow(*listOfNotNull(
+                button(if (hasPanic) "Mudar PIN de pânico…" else "Definir PIN de pânico…") {
+                    val missing = snap.myKeys.filter { it.info.fingerprint !in backedUp() }
+                    val go = {
+                    withCurrentPin {
+                        askNewPin("PIN de pânico", "Tem de ser diferente do PIN da app. Escolhe um que não escrevas por engano.") { chars ->
+                            changePins({ try { vault.setPanicPin(chars) } finally { chars.fill('\u0000') } }) {
+                                alert("PIN de pânico", "Guardado. Confirma que tens backup da chave privada fora do telemóvel.")
+                            }
+                        }
+                    }
+                    }
+                    if (missing.isEmpty()) go() else confirm(
+                        "Sem backup",
+                        "Não há backup registado de: ${missing.joinToString(", ") { it.info.userId }}.\n\n" +
+                            "O PIN de pânico apaga tudo sem volta. Faz primeiro o backup, a não ser que já o tenhas noutro sítio.",
+                        "Continuar mesmo assim",
+                    ) { go() }
+                },
+                if (hasPanic) button("Tirar PIN de pânico") { withCurrentPin { changePins({ vault.clearPanicPin() }) } } else null,
+            ).toTypedArray()))
+        }
+    }
+
     /** Bloco de notas: cada nota fica encriptada para as tuas chaves; ler pede a palavra-passe. */
     private inner class NotesScreen : Screen("Notas") {
         private val list = column(0)
@@ -1833,7 +1994,7 @@ class MainActivity : Activity() {
                 "• Guardar não pede nada; abrir pede a palavra-passe da tua chave.\n" +
                 "• O título fica visível na lista sem palavra-passe: não ponhas lá segredos.\n" +
                 "• As notas vivem só neste telemóvel e não entram no backup da chave. Para guardares uma fora daqui, " +
-                "encripta o texto para ti em Encriptar e guarda o resultado onde quiseres."
+                "encripta o texto para ti em Mensagens > Escrever e guarda o resultado onde quiseres."
 
         init {
             col.addView(heading("Notas"))
@@ -1908,6 +2069,11 @@ class MainActivity : Activity() {
     private companion object {
         const val REQ_OPEN = 1
         const val REQ_SAVE = 2
+        const val TAB_MESSAGES = 0
+        const val TAB_CONTACTS = 1
+        const val TAB_KEYS = 3
+        const val PREF_CONTACT_FORMAT = "fmt-"
+        const val PREF_CONTACT_CODE = "usecode-"
         const val PREF_WELCOMED = "welcomed"
         const val PREF_STEPS_HIDDEN = "stepsHidden"
         const val PREF_BACKED_UP = "backedUp"

@@ -24,6 +24,20 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 - **Backup em papel**: imprime a chave privada (protegida pela palavra-passe) em QR e em texto;
   restaura-se em Chaves > Importar > Ler QR.
 
+## Organização da app
+
+Separadores: **Mensagens** (Ler e Escrever, que são o Desencriptar e o Encriptar), **Contactos**,
+**Notas**, **Chaves** e **⚙** (bloqueio da app e ajuda).
+
+- **Colar e detetar**: em Mensagens, vê o que está na área de transferência e leva-o para o sítio
+  certo (mensagem para Ler, chave pública para Contactos, texto normal para Escrever).
+- **Conversa**: num contacto verificado, abre as Mensagens viradas para ele, com o formato e a
+  opção do código secreto usados da última vez, e um atalho "Colar o que recebi".
+- **Convidar**: em Contactos, partilha a tua chave pública com instruções para quem ainda não usa
+  a app. Ao importar, a app tira a chave do meio do texto.
+- **Impressão digital em palavras**: ao verificar um contacto (e em "Mostrar QR"), a impressão
+  digital aparece também como 20 palavras portuguesas, mais fáceis de ler em voz alta.
+
 ## Ajuda dentro da app
 
 - **Bem-vindo**: na primeira abertura sem chaves, uma explicação curta de como funciona.
@@ -36,7 +50,7 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 
 ## Bloqueio da app
 
-No fim do separador Chaves:
+No separador ⚙:
 
 - **Impressão digital / bloqueio do telemóvel**: pedido ao abrir e depois de 1 minuto fora da app.
 - **PIN da app**: um PIN próprio (guardado só como scrypt com sal). A partir da 5.ª tentativa

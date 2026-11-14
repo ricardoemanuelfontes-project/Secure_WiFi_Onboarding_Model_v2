@@ -312,6 +312,22 @@ object Pgp {
         }
     }
 
+    /**
+     * A impressão digital em palavras portuguesas (uma por byte), mais fáceis de ler em voz alta
+     * do que letras e números. É a impressão digital inteira, só escrita de outra maneira.
+     */
+    fun fingerprintWords(fpr: String): List<String> = fpr.chunked(2).map { Disguise.WORDS[it.toInt(16)] }
+
+    /**
+     * Se [text] trouxer chaves públicas armoradas no meio de outro texto (p. ex. um convite com
+     * instruções), devolve só os blocos das chaves; caso contrário devolve [text] tal como veio.
+     */
+    fun extractPublicKeys(text: String): String {
+        val blocks = Regex("-----BEGIN PGP PUBLIC KEY BLOCK-----.*?-----END PGP PUBLIC KEY BLOCK-----", RegexOption.DOT_MATCHES_ALL)
+            .findAll(text).map { it.value }.toList()
+        return if (blocks.isEmpty()) text else blocks.joinToString("\n")
+    }
+
     /** Converte uma mensagem binária (.gpg/.pgp) em texto ASCII-armor; texto já armorado fica igual. */
     fun ensureArmored(data: ByteArray): String {
         val head = String(data, 0, minOf(data.size, 64), Charsets.ISO_8859_1).trimStart()

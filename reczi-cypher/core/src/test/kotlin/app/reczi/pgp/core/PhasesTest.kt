@@ -199,6 +199,23 @@ class PhasesTest {
         assertFalse(v.hasPin())
     }
 
+    @Test
+    fun inviteTextAndFingerprintWords() {
+        val a = Pgp.generate("Ana", "ana@exemplo.pt", pass)
+        val b = Pgp.generate("Rui", "rui@exemplo.pt", pass)
+        val invite = "Olá! Instala a app.\n1. Faz isto\n\nA minha chave:\n${Pgp.armor(Pgp.certificateOf(a))}\nAté já!\n" +
+            "E a do Rui:\n${Pgp.armor(Pgp.certificateOf(b))}"
+        val certs = Pgp.parseCertificates(Pgp.extractPublicKeys(invite).toByteArray())
+        assertEquals(listOf(Pgp.fingerprint(a), Pgp.fingerprint(b)), certs.map { Pgp.fingerprint(it) })
+        assertEquals("sem chaves", Pgp.extractPublicKeys("sem chaves"))
+
+        val words = Pgp.fingerprintWords(Pgp.fingerprint(a))
+        assertEquals(20, words.size)
+        // As palavras dizem exatamente o mesmo que a impressão digital.
+        assertEquals(Pgp.fingerprint(a), words.joinToString("") { "%02X".format(Disguise.WORDS.indexOf(it)) })
+        assertFalse(words == Pgp.fingerprintWords(Pgp.fingerprint(b)))
+    }
+
     /** Desenha os módulos como uma imagem, [scale] píxeis por módulo. */
     private fun render(m: Array<BooleanArray>, scale: Int): Triple<IntArray, Int, Int> {
         val w = m[0].size * scale
