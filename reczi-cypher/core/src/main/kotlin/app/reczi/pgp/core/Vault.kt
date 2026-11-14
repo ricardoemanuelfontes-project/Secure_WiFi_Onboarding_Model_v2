@@ -25,7 +25,16 @@ class MemoryStore : Store {
 
 data class MyKey(val ring: PGPSecretKeyRing, val info: KeyInfo)
 
-data class Contact(val cert: PGPPublicKeyRing, val info: KeyInfo, val verified: Boolean)
+data class Contact(
+    val cert: PGPPublicKeyRing,
+    val info: KeyInfo,
+    val verified: Boolean,
+    /** Se há um código secreto combinado com este contacto: os algarismos para o confirmar. */
+    val codeCheck: String? = null,
+)
+
+/** Um texto disfarçado já convertido em PGP normal; [codeFpr] é o contacto cujo código secreto o abriu. */
+data class Revealed(val armored: String, val codeFpr: String?)
 
 /**
  * Um ficheiro do cofre que não foi possível ler ou avaliar. Se o ficheiro se leu mas a chave não
@@ -79,7 +88,8 @@ class Vault(private val store: Store) {
                 val cert = PGPainless.readKeyRing().publicKeyRing(load(name) ?: return@mapNotNull null)
                     ?: throw PgpError("vazio")
                 val info = Pgp.info(cert)
-                if (info.fingerprint in mine) null else Contact(cert, info, info.fingerprint in verified)
+                if (info.fingerprint in mine) null
+                else Contact(cert, info, info.fingerprint in verified, code(info.fingerprint)?.let(Disguise::checkDigits))
             } catch (e: Exception) {
                 broken += BrokenEntry(name, false, reason(e))
                 null
@@ -149,6 +159,7 @@ class Vault(private val store: Store) {
     @Synchronized
     fun deleteContact(fingerprint: String) {
         remove(PUB + fingerprint)
+        remove(CODE + fingerprint)
         setVerified(fingerprint, false)
     }
 
@@ -157,6 +168,58 @@ class Vault(private val store: Store) {
         val set = try { verified().toMutableSet() } catch (e: Exception) { mutableSetOf() }
         val changed = if (verified) set.add(fingerprint) else set.remove(fingerprint)
         if (changed) save(VERIFIED, set.sorted().joinToString("\n").toByteArray())
+    }
+
+    /**
+     * Guarda o código secreto combinado com um contacto (ver [Disguise]). Fica guardada só a chave
+     * derivada da frase, não a frase. Devolve os algarismos de confirmação.
+     */
+    fun setCode(fingerprint: String, code: CharArray): String {
+        val secret = Disguise.deriveSecret(code) // lento: fora do bloqueio do cofre
+        synchronized(this) {
+            if (snapshot().contacts.none { it.info.fingerprint == fingerprint }) throw PgpError("Destinatário desconhecido.")
+            save(CODE + fingerprint, secret)
+        }
+        return Disguise.checkDigits(secret)
+    }
+
+    @Synchronized
+    fun clearCode(fingerprint: String) = remove(CODE + fingerprint)
+
+    private fun code(fingerprint: String): ByteArray? = load(CODE + fingerprint)?.takeIf { it.size == 32 }
+
+    /**
+     * Disfarça um texto PGP (mensagem ou chave). Com [codeFpr], usa o código secreto combinado
+     * com esse contacto em vez da chave fixa da app.
+     */
+    @Synchronized
+    fun disguise(armored: String, words: Boolean, codeFpr: String? = null): String {
+        val secret = codeFpr?.let { code(it) ?: throw PgpError("Não há código secreto combinado com este contacto.") }
+        return Disguise.hide(Pgp.dearmor(armored), words, secret)
+    }
+
+    /**
+     * Se [text] for um texto disfarçado (com a chave da app ou com o código secreto de um
+     * contacto), devolve-o como PGP normal; caso contrário devolve null.
+     */
+    @Synchronized
+    fun reveal(text: String): Revealed? {
+        val codes = store.names().filter { it.startsWith(CODE) }.mapNotNull { n -> code(n.removePrefix(CODE))?.let { n.removePrefix(CODE) to it } }
+        val (bytes, i) = Disguise.revealWith(text, codes.map { it.second }) ?: return null
+        val armored = runCatching { Pgp.ensureArmored(bytes) }.getOrNull() ?: return null
+        return Revealed(armored, codes.getOrNull(i)?.first)
+    }
+
+    /** Texto recebido → PGP normal, com uma explicação útil quando não se reconhece. */
+    private fun normalize(text: String): Revealed {
+        reveal(text)?.let { return it }
+        if ("-----BEGIN PGP" !in text) {
+            throw PgpError(
+                "Não reconheço esta mensagem. Se foi enviada com código secreto, confirma que tens nesse contacto " +
+                    "o mesmo código que o remetente (os algarismos de confirmação têm de ser iguais)."
+            )
+        }
+        return Revealed(text, null)
     }
 
     /** Esquece o que estava em memória (depois de começar um cofre novo). */
@@ -210,10 +273,10 @@ class Vault(private val store: Store) {
 
     /**
      * true se a mensagem foi encriptada para uma das tuas chaves (ou para um destinatário oculto).
-     * Aceita mensagens normais e disfarçadas (ver [Disguise]).
+     * Aceita mensagens normais e disfarçadas (ver [reveal]).
      */
     fun isForMe(text: String): Boolean {
-        val message = Pgp.undisguise(text) ?: text
+        val message = normalize(text).armored
         val ids = Pgp.recipientKeyIds(message)
         val mine = snapshot().myKeys.flatMap { Pgp.keyIds(it.ring) }.toSet()
         return ids.any { it == 0L || it in mine }
@@ -221,7 +284,8 @@ class Vault(private val store: Store) {
 
     /** Desencripta uma mensagem normal ou disfarçada (ver [Disguise]). */
     fun decrypt(text: String, passphrase: CharArray): DecryptResult {
-        val message = Pgp.undisguise(text) ?: text
+        val revealed = normalize(text)
+        val message = revealed.armored
         val snap = snapshot()
         val myKeys = snap.myKeys.map { it.ring }
         if (myKeys.isEmpty()) throw PgpError("Ainda não tens nenhuma chave privada.")
@@ -244,6 +308,7 @@ class Vault(private val store: Store) {
             signature = d.signature,
             signerName = mine?.info?.userId ?: contact?.info?.userId,
             signerVerified = d.signature is SignatureStatus.Valid && (mine != null || contact?.verified == true),
+            secretCodeWith = revealed.codeFpr?.let { fpr -> snap.contacts.firstOrNull { it.info.fingerprint == fpr }?.info?.userId },
         )
     }
 
@@ -270,6 +335,7 @@ class Vault(private val store: Store) {
         private const val SEC = "sec-"
         private const val PUB = "pub-"
         private const val VERIFIED = "verified"
+        private const val CODE = "code-"
     }
 }
 
@@ -279,4 +345,6 @@ data class DecryptResult(
     val signerName: String?,
     /** A assinatura é de uma chave tua ou de um destinatário que verificaste. */
     val signerVerified: Boolean,
+    /** Se a mensagem vinha disfarçada com um código secreto: o contacto com quem está combinado. */
+    val secretCodeWith: String? = null,
 )

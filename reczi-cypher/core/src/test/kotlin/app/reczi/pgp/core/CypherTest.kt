@@ -119,4 +119,75 @@ class CypherTest {
         val flipped = hidden.substring(0, 40) + (if (hidden[40] == 'A') 'B' else 'A') + hidden.substring(41)
         assertNull(Pgp.undisguise(flipped))
     }
+
+    /** Ana e Rui conhecem-se e verificaram as chaves um do outro. */
+    private fun pair(): List<Pair<Vault, String>> {
+        val ana = vaultWithKey("Ana", "ana@exemplo.pt")
+        val rui = vaultWithKey("Rui", "rui@exemplo.pt")
+        ana.first.importContacts(listOf(Pgp.certificateOf(rui.first.myKey(rui.second))))
+        ana.first.setVerified(rui.second, true)
+        rui.first.importContacts(listOf(Pgp.certificateOf(ana.first.myKey(ana.second))))
+        rui.first.setVerified(ana.second, true)
+        return listOf(ana, rui)
+    }
+
+    @Test
+    fun secretCodeLayerNeedsTheSameCodeOnBothSides() {
+        val (a, r) = pair()
+        val (ana, anaFpr) = a
+        val (rui, ruiFpr) = r
+        val check = ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray())
+        assertEquals(check, ana.contacts().single().codeCheck)
+        val armored = ana.encrypt("só nós dois", listOf(ruiFpr), anaFpr, true, pass)
+
+        for (words in listOf(false, true)) {
+            val hidden = ana.disguise(armored, words, ruiFpr)
+            // Sem o código, nem a app (chave fixa) consegue ver que é PGP.
+            assertNull(Pgp.undisguise(hidden))
+            assertNull(rui.reveal(hidden))
+            val e = assertFailsWith<PgpError> { rui.decrypt(hidden, pass) }
+            assertTrue(e.message!!.contains("código secreto"))
+
+            // Código errado: continua fechado.
+            rui.setCode(anaFpr, "o gato comeu a sardinha!".toCharArray())
+            assertNull(rui.reveal(hidden))
+
+            // Código certo (espaços à volta não contam): abre, e diz com quem é o código.
+            assertEquals(check, rui.setCode(anaFpr, "  o gato comeu a sardinha ".toCharArray()))
+            assertEquals(anaFpr, rui.reveal(hidden)!!.codeFpr)
+            val d = rui.decrypt(hidden, pass)
+            assertEquals("só nós dois", d.text)
+            assertEquals("Ana <ana@exemplo.pt>", d.secretCodeWith)
+            assertTrue(d.signerVerified)
+            // A própria Ana também consegue reler.
+            assertEquals("só nós dois", ana.decrypt(hidden, pass).text)
+            rui.clearCode(anaFpr)
+        }
+    }
+
+    @Test
+    fun secretCodeIsOptionalAndGoesAwayWithTheContact() {
+        val (a, r) = pair()
+        val (ana, anaFpr) = a
+        val (rui, ruiFpr) = r
+        ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray())
+        rui.setCode(anaFpr, "o gato comeu a sardinha".toCharArray())
+        val armored = ana.encrypt("sem código", listOf(ruiFpr), anaFpr, false, null)
+        // Mesmo com código combinado, as mensagens normais e as disfarçadas sem código continuam a abrir.
+        assertEquals("sem código", rui.decrypt(armored, pass).text)
+        val plainDisguise = rui.decrypt(ana.disguise(armored, false), pass)
+        assertEquals("sem código", plainDisguise.text)
+        assertNull(plainDisguise.secretCodeWith)
+
+        assertFailsWith<PgpError> { ana.setCode(ruiFpr, "curto".toCharArray()) }
+        assertFailsWith<PgpError> { ana.setCode("0".repeat(40), "frase comprida que chegue".toCharArray()) }
+
+        ana.clearCode(ruiFpr)
+        assertNull(ana.contacts().single().codeCheck)
+        assertFailsWith<PgpError> { ana.disguise(armored, false, ruiFpr) }
+
+        rui.deleteContact(anaFpr)
+        rui.importContacts(listOf(Pgp.certificateOf(ana.myKey(anaFpr))))
+        assertNull(rui.contacts().single().codeCheck, "apagar o contacto apaga o código")
+    }
 }

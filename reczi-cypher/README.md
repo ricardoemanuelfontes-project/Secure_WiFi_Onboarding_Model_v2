@@ -25,7 +25,19 @@ escolher:
 A chave pública também pode ser partilhada disfarçada. A app reconhece sozinha um texto disfarçado
 ao colar, importar ou receber por partilha.
 
-Limites, para não haver ilusões:
+### Código secreto por contacto (opcional)
+
+Em Contactos, num contacto verificado, podes combinar um **código secreto**: uma frase que os dois
+escrevem, cada um na sua app (combinada em pessoa ou por chamada). A app mostra seis algarismos de
+confirmação, que têm de ser iguais nos dois telemóveis. Depois, em Encriptar, com um formato
+disfarçado e só esse destinatário, aparece a opção "Fechar com o código secreto".
+
+Com o código, a camada de fora passa a ser uma segunda cifra a sério (AES-256 com chave derivada da
+frase por scrypt): sem a frase, nem com a app se consegue ver que por baixo está PGP. Fica guardada
+só a chave derivada, dentro do cofre. Se mudarem a frase, as mensagens antigas com código deixam de
+abrir.
+
+Limites do disfarce sem código secreto, para não haver ilusões:
 
 - Só quem usa o Reczi cypher consegue abrir um texto disfarçado (o GnuPG não).
 - É camuflagem, não é segurança a mais: a chave do disfarce é fixa e está dentro da app, por isso

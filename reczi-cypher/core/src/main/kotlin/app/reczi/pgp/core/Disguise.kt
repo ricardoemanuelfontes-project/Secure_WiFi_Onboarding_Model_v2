@@ -25,6 +25,10 @@ import javax.crypto.spec.SecretKeySpec
  * Há duas formas de escrever o resultado: "código" (Base64 URL-safe, curto) e "palavras"
  * (uma palavra portuguesa por byte: fica muito mais comprido, mas parece texto solto e não um código).
  *
+ * CÓDIGO SECRETO (opcional, por contacto): em vez da chave fixa, a camada de fora pode usar uma
+ * chave derivada de uma frase combinada entre duas pessoas ([deriveSecret]). Nesse caso é mesmo uma
+ * segunda camada de segurança: sem a frase, nem com a app se consegue ver que por baixo está PGP.
+ *
  * Formato dos bytes: nonce(16) || AES-256-CTR(nonce, pgp) || etiqueta(4).
  * A etiqueta (HMAC-SHA256 truncado, com a mesma chave fixa) só serve para reconhecer de forma
  * fiável um texto disfarçado e detetar erros de cópia; a integridade real vem do OpenPGP.
@@ -33,18 +37,47 @@ object Disguise {
     private const val NONCE = 16
     private const val TAG = 4
 
-    private val encKey: ByteArray = derive("enc")
-    private val macKey: ByteArray = derive("mac")
+    private class Keys(val enc: ByteArray, val mac: ByteArray)
+
+    /** Chave fixa da app (camuflagem). */
+    private val fixed = Keys(derive("enc"), derive("mac"))
     private val random = SecureRandom()
+
+    /** Chaves da camada de fora a partir de um código secreto já derivado ([deriveSecret]). */
+    private fun keysOf(secret: ByteArray) = Keys(hmac(secret, "enc".toByteArray()), hmac(secret, "mac".toByteArray()))
+
+    const val MIN_CODE = 8
+
+    /**
+     * Transforma a frase combinada numa chave de 32 bytes, com scrypt (lento e com muita memória,
+     * para dificultar adivinhar a frase). O sal é fixo, porque as duas pessoas têm de chegar à mesma
+     * chave só a partir da frase. Diferenças de espaços no início/fim e de forma Unicode não contam;
+     * maiúsculas e minúsculas contam.
+     */
+    fun deriveSecret(code: CharArray): ByteArray {
+        val normalized = java.text.Normalizer.normalize(String(code).trim(), java.text.Normalizer.Form.NFKC)
+        if (normalized.length < MIN_CODE) throw PgpError("O código secreto tem de ter pelo menos $MIN_CODE caracteres. Usa uma frase.")
+        return org.bouncycastle.crypto.generators.SCrypt.generate(
+            normalized.toByteArray(Charsets.UTF_8), "Reczi cypher / código secreto v1".toByteArray(Charsets.UTF_8), 1 shl 15, 8, 1, 32,
+        )
+    }
+
+    /** Seis algarismos para as duas pessoas confirmarem que escreveram a mesma frase. */
+    fun checkDigits(secret: ByteArray): String {
+        val h = hmac(secret, "check".toByteArray())
+        val n = ((h[0].toInt() and 0xff) shl 16) or ((h[1].toInt() and 0xff) shl 8) or (h[2].toInt() and 0xff)
+        return "%06d".format(n % 1_000_000).chunked(3).joinToString(" ")
+    }
 
     private fun derive(label: String): ByteArray =
         MessageDigest.getInstance("SHA-256").digest("Reczi cypher / disfarce v1 / $label".toByteArray(Charsets.UTF_8))
 
     /** Disfarça bytes PGP binários (mensagem ou chave pública). */
-    fun hide(pgp: ByteArray, words: Boolean = false): String {
+    fun hide(pgp: ByteArray, words: Boolean = false, secret: ByteArray? = null): String {
+        val keys = secret?.let(::keysOf) ?: fixed
         val nonce = ByteArray(NONCE).also { random.nextBytes(it) }
-        val body = ctr(nonce, pgp)
-        val raw = nonce + body + tag(nonce, body)
+        val body = ctr(keys, nonce, pgp)
+        val raw = nonce + body + tag(keys, nonce, body)
         return if (words) raw.joinToString(" ") { WORDS[it.toInt() and 0xff] }
         else Base64.getUrlEncoder().withoutPadding().encodeToString(raw)
     }
@@ -53,16 +86,26 @@ object Disguise {
      * Tira o disfarce. Devolve os bytes PGP binários, ou null se [text] não for um texto disfarçado
      * válido (p. ex. um texto normal, uma mensagem PGP normal, ou uma cópia cortada).
      */
-    fun reveal(text: String): ByteArray? =
-        sequenceOf(::fromCode, ::fromWords).firstNotNullOfOrNull { decode -> decode(text)?.let(::open) }
+    fun reveal(text: String): ByteArray? = revealWith(text, emptyList())?.first
 
-    private fun open(raw: ByteArray): ByteArray? {
-        if (raw.size <= NONCE + TAG) return null
+    /**
+     * Como [reveal], mas tenta também os códigos secretos indicados. Devolve os bytes PGP e o
+     * índice do código que abriu o texto (-1 se foi a chave fixa da app).
+     */
+    fun revealWith(text: String, secrets: List<ByteArray>): Pair<ByteArray, Int>? {
+        val candidates = listOfNotNull(fromCode(text), fromWords(text)).filter { it.size > NONCE + TAG }
+        if (candidates.isEmpty()) return null
+        val all = listOf(-1 to fixed) + secrets.mapIndexed { i, k -> i to keysOf(k) }
+        for (raw in candidates) for ((i, keys) in all) open(raw, keys)?.let { return it to i }
+        return null
+    }
+
+    private fun open(raw: ByteArray, keys: Keys): ByteArray? {
         val nonce = raw.copyOfRange(0, NONCE)
         val body = raw.copyOfRange(NONCE, raw.size - TAG)
         val tag = raw.copyOfRange(raw.size - TAG, raw.size)
-        if (!MessageDigest.isEqual(tag, tag(nonce, body))) return null
-        return ctr(nonce, body)
+        if (!MessageDigest.isEqual(tag, tag(keys, nonce, body))) return null
+        return ctr(keys, nonce, body)
     }
 
     private fun fromCode(text: String): ByteArray? {
@@ -85,18 +128,20 @@ object Disguise {
 
     fun isDisguised(text: String): Boolean = reveal(text) != null
 
-    private fun ctr(nonce: ByteArray, data: ByteArray): ByteArray =
+    private fun ctr(keys: Keys, nonce: ByteArray, data: ByteArray): ByteArray =
         Cipher.getInstance("AES/CTR/NoPadding").run {
-            init(Cipher.ENCRYPT_MODE, SecretKeySpec(encKey, "AES"), IvParameterSpec(nonce))
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(keys.enc, "AES"), IvParameterSpec(nonce))
             doFinal(data)
         }
 
-    private fun tag(nonce: ByteArray, body: ByteArray): ByteArray =
+    private fun tag(keys: Keys, nonce: ByteArray, body: ByteArray): ByteArray = hmac(keys.mac, nonce, body).copyOf(TAG)
+
+    private fun hmac(key: ByteArray, vararg parts: ByteArray): ByteArray =
         Mac.getInstance("HmacSHA256").run {
-            init(SecretKeySpec(macKey, "HmacSHA256"))
-            update(nonce)
-            doFinal(body)
-        }.copyOf(TAG)
+            init(SecretKeySpec(key, "HmacSHA256"))
+            parts.forEach { update(it) }
+            doFinal()
+        }
 
     /** 256 palavras portuguesas simples, sem acentos: uma por cada valor de byte. */
     internal val WORDS: List<String> = """

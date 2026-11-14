@@ -46,6 +46,7 @@ import android.widget.Toast
 import app.reczi.pgp.core.BrokenEntry
 import app.reczi.pgp.core.Contact
 import app.reczi.pgp.core.DecryptResult
+import app.reczi.pgp.core.Disguise
 import app.reczi.pgp.core.KeyInfo
 import app.reczi.pgp.core.MyKey
 import app.reczi.pgp.core.Pgp
@@ -199,12 +200,14 @@ class MainActivity : Activity() {
         val text = runCatching { intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim() }.getOrNull()
         setIntent(Intent(this, MainActivity::class.java))
         if (text.isNullOrEmpty()) return alert("Partilha", "Não recebi texto. Partilha a mensagem ou a chave como texto.")
-        routeShared(Pgp.undisguise(text) ?: text) // texto disfarçado pela app: volta a PGP normal
+        // Texto disfarçado (pela app ou com um código secreto): vê-se primeiro o que está por baixo.
+        work("A ler…", { vault.reveal(text)?.armored }) { plain -> routeShared(plain ?: text, text) }
     }
 
-    private fun routeShared(text: String) {
+    private fun routeShared(text: String, original: String) {
         when {
-            "BEGIN PGP MESSAGE" in text -> { show(3); (screens[3] as DecryptScreen).setMessage(text) }
+            // A mensagem fica como chegou: o cofre tira o disfarce ao desencriptar.
+            "BEGIN PGP MESSAGE" in text -> { show(3); (screens[3] as DecryptScreen).setMessage(original) }
             "BEGIN PGP PUBLIC KEY BLOCK" in text -> { show(1); (screens[1] as ContactsScreen).input.setText(text) }
             "BEGIN PGP PRIVATE KEY BLOCK" in text -> alert("Partilha", "Por segurança, importa chaves privadas a partir de um ficheiro, no separador Chaves.")
             else -> { show(2); (screens[2] as EncryptScreen).draft.setText(text) }
@@ -349,11 +352,13 @@ class MainActivity : Activity() {
     }
 
     /** Pede a palavra-passe; o CharArray entregue a [onOk] tem de ser apagado por quem o usa. */
-    private fun askPassphrase(title: String, hint: String, repeat: Boolean = false, onOk: (CharArray) -> Unit) {
+    private fun askPassphrase(
+        title: String, hint: String, repeat: Boolean = false, fieldHint: String = "Palavra-passe", onOk: (CharArray) -> Unit,
+    ) {
         val box = column(dp(20))
         if (hint.isNotEmpty()) box.addView(TextView(this).apply { text = hint })
-        val p1 = passwordField("Palavra-passe")
-        val p2 = passwordField("Repete a palavra-passe")
+        val p1 = passwordField(fieldHint)
+        val p2 = passwordField("Repete")
         box.addView(p1)
         if (repeat) box.addView(p2)
         val dialog = AlertDialog.Builder(this).setTitle(title).setView(box)
@@ -361,7 +366,7 @@ class MainActivity : Activity() {
             .showSecure()
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             if (repeat && p1.text.toString() != p2.text.toString()) {
-                p2.error = "As palavras-passe não coincidem."
+                p2.error = "Não coincidem."
                 return@setOnClickListener
             }
             val chars = p1.takeChars()
@@ -489,15 +494,39 @@ class MainActivity : Activity() {
     /** Pergunta em que formato partilhar um texto PGP: normal ou disfarçado (ver Disguise no núcleo). */
     private fun pickFormat(armored: String, then: (String) -> Unit) {
         AlertDialog.Builder(this).setTitle("Formato")
-            .setItems(FORMATS) { _, i -> then(formatted(armored, i)) }
+            .setItems(FORMATS) { _, i -> then(formatted(armored, i, null)) }
             .setNegativeButton("Cancelar", null)
             .showSecure()
     }
 
-    private fun formatted(armored: String, format: Int): String = when (format) {
-        FORMAT_CODE -> Pgp.disguise(armored)
-        FORMAT_WORDS -> Pgp.disguise(armored, words = true)
+    /** [codeFpr]: contacto cujo código secreto fecha a camada de fora (só nos formatos disfarçados). */
+    private fun formatted(armored: String, format: Int, codeFpr: String?): String = when (format) {
+        FORMAT_CODE -> vault.disguise(armored, words = false, codeFpr = codeFpr)
+        FORMAT_WORDS -> vault.disguise(armored, words = true, codeFpr = codeFpr)
         else -> armored
+    }
+
+    /** Combinar (ou mudar) o código secreto com um contacto. */
+    private fun askSecretCode(c: Contact) {
+        askPassphrase(
+            "Código secreto",
+            "Combina uma frase com ${c.info.userId}, em pessoa ou por chamada (nunca por mensagem). " +
+                "Têm os dois de escrever exatamente a mesma frase, cada um na sua app (mín. ${Disguise.MIN_CODE} caracteres; " +
+                "maiúsculas e minúsculas contam).\n\nSe um dia a mudarem, as mensagens antigas com código deixam de abrir.",
+            repeat = true,
+            fieldHint = "Frase combinada",
+        ) { chars ->
+            change("A guardar…", {
+                try { vault.setCode(c.info.fingerprint, chars) } finally { chars.fill('\u0000') }
+            }) { check ->
+                alert(
+                    "Código secreto guardado",
+                    "Confirmação: $check\n\nNa app de ${c.info.userId} têm de aparecer os mesmos algarismos. " +
+                        "Se forem diferentes, um dos dois escreveu a frase de outra maneira.\n\n" +
+                        "Para o usar: em Encriptar, escolhe um formato disfarçado e só este destinatário."
+                )
+            }
+        }
     }
 
     private val prefs get() = getSharedPreferences("prefs", Context.MODE_PRIVATE)
@@ -824,6 +853,18 @@ class MainActivity : Activity() {
                 text = if (c.verified) "✔ Verificada" else "NÃO verificada - ainda não podes encriptar para esta chave"
                 setTextColor(if (c.verified) green else orange)
             })
+            if (c.codeCheck != null) v.addView(TextView(this@MainActivity).apply {
+                text = "✔ Código secreto combinado (confirmação: ${c.codeCheck})"
+                setTextColor(green)
+            })
+            if (c.verified) v.addView(buttonRow(*listOfNotNull(
+                button(if (c.codeCheck == null) "Código secreto…" else "Mudar código…") { askSecretCode(c) },
+                if (c.codeCheck == null) null else button("Tirar código") {
+                    confirm("Tirar código secreto", "Deixas de conseguir abrir as mensagens de ${c.info.userId} enviadas com código secreto.", "Tirar") {
+                        change("A guardar…", { vault.clearCode(c.info.fingerprint) })
+                    }
+                },
+            ).toTypedArray()))
             val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
             if (!c.verified) row.addView(button("Verificar…") { showFingerprintAndVerify(c.info) },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -840,7 +881,7 @@ class MainActivity : Activity() {
             if (data.isEmpty()) return
             change("A importar…", {
                 // Uma chave disfarçada pela app volta primeiro a PGP normal.
-                val plain = Pgp.undisguise(String(data, Charsets.UTF_8))?.toByteArray() ?: data
+                val plain = vault.reveal(String(data, Charsets.UTF_8))?.armored?.toByteArray() ?: data
                 vault.importContacts(Pgp.parseCertificates(plain))
             }) { r ->
                 input.setText("")
@@ -867,6 +908,9 @@ class MainActivity : Activity() {
         private val sign = CheckBox(this@MainActivity).apply { text = "Assinar com a minha chave"; isChecked = true }
         private val format = Spinner(this@MainActivity)
         private val formatHint = label("")
+        /** Contacto cujo código secreto pode fechar a camada de fora (um só destinatário, com código). */
+        private var codeFpr: String? = null
+        private val useCode = CheckBox(this@MainActivity).apply { isChecked = prefs.getBoolean(PREF_USE_CODE, true) }
         private val output = textArea("", 5, mono = true).apply { keyListener = null; setTextIsSelectable(true) }
         private val outBox = column(0)
         private val col = column()
@@ -887,6 +931,7 @@ class MainActivity : Activity() {
             format.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, v: View?, position: Int, id: Long) {
                     prefs.edit().putInt(PREF_FORMAT, position).apply()
+                    updateCode()
                     formatHint.text = when (position) {
                         FORMAT_CODE -> "Parece um código ao acaso; não se vê que é PGP. Só quem usa o Reczi cypher o consegue abrir."
                         FORMAT_WORDS -> "Parece uma lista de palavras soltas (fica bem mais comprido). Só quem usa o Reczi cypher o consegue abrir."
@@ -897,6 +942,8 @@ class MainActivity : Activity() {
             }
             col.addView(format)
             col.addView(formatHint)
+            useCode.setOnClickListener { prefs.edit().putBoolean(PREF_USE_CODE, useCode.isChecked).apply() }
+            col.addView(useCode)
             col.addView(primaryButton("Encriptar") { encrypt() })
             outBox.addView(heading("Mensagem encriptada"))
             outBox.addView(output)
@@ -907,6 +954,19 @@ class MainActivity : Activity() {
             ))
             outBox.visibility = View.GONE
             col.addView(outBox)
+        }
+
+        /**
+         * A opção do código secreto só aparece quando faz sentido: formato disfarçado e um único
+         * contacto escolhido (além de ti) com quem tens um código combinado.
+         */
+        private fun updateCode() {
+            val mine = snap.myKeys.map { it.info.fingerprint }.toSet()
+            val others = boxes.filter { it.first.isChecked }.map { it.second }.filterNot { it in mine }
+            val c = others.singleOrNull()?.let { fpr -> snap.contacts.firstOrNull { it.info.fingerprint == fpr && it.codeCheck != null } }
+            codeFpr = c?.info?.fingerprint?.takeIf { format.selectedItemPosition != FORMAT_PGP }
+            useCode.text = "Fechar com o código secreto de ${c?.info?.userId ?: ""}"
+            useCode.visibility = if (codeFpr != null) View.VISIBLE else View.GONE
         }
 
         /** Prepara uma resposta: fica escolhido só este destinatário. */
@@ -929,6 +989,7 @@ class MainActivity : Activity() {
                     isChecked = usable && fpr in checked
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
+                    setOnClickListener { updateCode() }
                 }
                 if (usable) boxes += cb to fpr
                 recipients.addView(cb)
@@ -953,6 +1014,7 @@ class MainActivity : Activity() {
             } else {
                 ownWarning.visibility = View.GONE
             }
+            updateCode()
         }
 
         override fun clearSensitive() {
@@ -966,6 +1028,8 @@ class MainActivity : Activity() {
             val to = boxes.filter { it.first.isChecked }.map { it.second }
             val me = myFprs.getOrNull(myKeySpinner.selectedItemPosition.coerceAtLeast(0))
             val fmt = format.selectedItemPosition
+            updateCode()
+            val code = codeFpr?.takeIf { useCode.isChecked }
             when {
                 text.isEmpty() -> return alert("Encriptar", "Escreve primeiro a mensagem.")
                 me == null && snap.myKeys.isNotEmpty() -> return alert("Encriptar", "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves.")
@@ -974,7 +1038,7 @@ class MainActivity : Activity() {
             }
             val run = { chars: CharArray? ->
                 work("A encriptar…", {
-                    try { formatted(vault.encrypt(text, to, me!!, chars != null, chars), fmt) } finally { chars?.fill('\u0000') }
+                    try { formatted(vault.encrypt(text, to, me!!, chars != null, chars), fmt, code) } finally { chars?.fill('\u0000') }
                 }) {
                     output.setText(it)
                     outBox.visibility = View.VISIBLE
@@ -1081,7 +1145,7 @@ class MainActivity : Activity() {
                 SignatureStatus.UnknownSigner -> "REMETENTE DESCONHECIDO - assinada por uma chave que não tens." to orange
                 SignatureStatus.None -> "SEM ASSINATURA - não é possível confirmar quem a enviou." to orange
             }
-            status.text = text
+            status.text = if (r.secretCodeWith == null) text else "$text\n🔒 Veio fechada com o código secreto combinado com ${r.secretCodeWith}."
             status.setTextColor(color)
             // Responder: só a quem assinou com uma chave que já verificaste e que ainda serve para encriptar.
             val signer = (r.signature as? SignatureStatus.Valid)?.fingerprint?.takeIf { r.signerVerified }
@@ -1108,6 +1172,7 @@ class MainActivity : Activity() {
         const val KIND_PUBLIC = "public"
         const val KIND_MESSAGE = "message"
         const val PREF_FORMAT = "format"
+        const val PREF_USE_CODE = "useCode"
         const val FORMAT_PGP = 0
         const val FORMAT_CODE = 1
         const val FORMAT_WORDS = 2
