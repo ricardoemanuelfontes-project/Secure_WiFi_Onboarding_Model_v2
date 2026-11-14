@@ -91,6 +91,19 @@ class CypherTest {
     }
 
     @Test
+    fun disguiseAsWordsRoundTrips() {
+        assertEquals(256, Disguise.WORDS.toSet().size)
+        val (v, me) = vaultWithKey("Ana", "ana@exemplo.pt")
+        val hidden = Pgp.disguise(v.encrypt("em palavras", listOf(me), me, true, pass), words = true)
+        assertTrue(hidden.all { it in 'a'..'z' || it == ' ' })
+        assertEquals("em palavras", v.decrypt(hidden, pass).text)
+        // Sobrevive a maiúsculas, pontuação e quebras de linha postas pelo caminho.
+        val mangled = hidden.split(" ").chunked(9).joinToString(".\n") { it.joinToString(" ").replaceFirstChar(Char::uppercase) }
+        assertEquals("em palavras", v.decrypt(mangled, pass).text)
+        assertNull(Pgp.undisguise("casa mesa porta janela rua ponte rio mar sol lua ceu nuvem chuva vento neve fogo agua terra pedra areia monte vale"))
+    }
+
+    @Test
     fun ordinaryTextIsNotMistakenForDisguise() {
         assertNull(Pgp.undisguise("Olá, tudo bem? Amanhã às 8 no sítio do costume."))
         assertNull(Pgp.undisguise("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))

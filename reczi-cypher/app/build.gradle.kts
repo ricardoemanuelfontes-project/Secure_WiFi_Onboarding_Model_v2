@@ -10,11 +10,13 @@ android {
     compileSdk = 35
 
     defaultConfig {
+        // O id interno continua "app.reczi.pgp" (só o nome visível mudou para "Reczi cypher"):
+        // assim esta versão instala-se por cima da anterior e as chaves guardadas mantêm-se.
         applicationId = "app.reczi.pgp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     // Chave de assinatura da app, FORA do projeto (nunca vai para um repositório):

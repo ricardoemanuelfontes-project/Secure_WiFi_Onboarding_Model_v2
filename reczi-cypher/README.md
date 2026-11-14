@@ -1,4 +1,4 @@
-# reczi-pgp
+# Reczi cypher
 
 App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com o GnuPG
 (e com o `cofre` / Cofre PGP do Debian).
@@ -8,7 +8,30 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 - **Contactos**: importar chaves públicas (colar, ficheiro ou partilhar a partir de outra app) e
   verificar a impressão digital. Só se pode encriptar para contactos verificados.
 - **Encriptar**: para um ou vários destinatários, sempre também para ti, assinado por omissão.
+  Também podes escolher só a tua própria chave (uma nota para ti).
 - **Desencriptar**: mostra o texto só depois de confirmar a integridade, e diz quem assinou.
+  O botão "Responder" abre o Encriptar já com o remetente escolhido.
+- **Avisos de validade**: ao abrir, a app avisa das chaves que expiram nos próximos 30 dias.
+
+## Modo disfarçado
+
+Uma mensagem PGP normal vê-se logo que é PGP (`-----BEGIN PGP MESSAGE-----`). Em "Formato" podes
+escolher:
+
+- **PGP normal**: abre em qualquer programa OpenPGP.
+- **Disfarçado: código**: uma linha de letras e números ao acaso, sem cabeçalhos.
+- **Disfarçado: palavras**: uma lista de palavras portuguesas soltas (bem mais comprido).
+
+A chave pública também pode ser partilhada disfarçada. A app reconhece sozinha um texto disfarçado
+ao colar, importar ou receber por partilha.
+
+Limites, para não haver ilusões:
+
+- Só quem usa o Reczi cypher consegue abrir um texto disfarçado (o GnuPG não).
+- É camuflagem, não é segurança a mais: a chave do disfarce é fixa e está dentro da app, por isso
+  quem tiver a app consegue ver que por baixo está PGP. O segredo da mensagem continua a depender
+  só do OpenPGP.
+- Esconde que é PGP (e os ids das chaves dos destinatários), não esconde que é texto cifrado.
 
 ## Segurança
 
@@ -39,6 +62,8 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 
 ## Estrutura
 
+- O id interno da app continua `app.reczi.pgp` (só o nome visível mudou), para as atualizações
+  se instalarem por cima da versão anterior sem perder as chaves.
 - `core/`: a criptografia e o cofre, em Kotlin puro. Tem testes que incluem trocas reais com o
   GnuPG 2.4 nos dois sentidos.
 - `app/`: a interface Android (só a framework, sem AndroidX) e o armazenamento no Keystore.

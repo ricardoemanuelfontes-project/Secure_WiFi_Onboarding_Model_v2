@@ -323,8 +323,11 @@ object Pgp {
         throw PgpError("Não reconheço isto como PGP.", e)
     }
 
-    /** Disfarça uma mensagem ou chave PGP (armorada) para não parecer PGP. Ver [Disguise]. */
-    fun disguise(armored: String): String = Disguise.hide(dearmor(armored))
+    /**
+     * Disfarça uma mensagem ou chave PGP (armorada) para não parecer PGP: como um código, ou,
+     * com [words], como uma sequência de palavras portuguesas. Ver [Disguise].
+     */
+    fun disguise(armored: String, words: Boolean = false): String = Disguise.hide(dearmor(armored), words)
 
     /**
      * Se [text] for um texto disfarçado pela app, devolve-o como PGP normal (ASCII-armor);

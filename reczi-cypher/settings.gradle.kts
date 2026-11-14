@@ -11,7 +11,7 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "reczi-pgp"
+rootProject.name = "reczi-cypher"
 // Núcleo de criptografia: build independente (testes JVM), usado pela app como dependência.
 includeBuild("core")
 include(":app")

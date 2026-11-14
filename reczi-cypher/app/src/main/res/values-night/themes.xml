@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Reczi" parent="android:Theme.Material">
-        <item name="android:colorPrimary">@color/primary_dark</item>
-        <item name="android:colorPrimaryDark">@color/primary_dark</item>
-        <item name="android:colorAccent">#8CC4EC</item>
+        <item name="android:colorPrimary">@color/brand_black</item>
+        <item name="android:colorPrimaryDark">@color/brand_black_dark</item>
+        <item name="android:colorAccent">@color/brand_red_light</item>
+        <item name="android:windowBackground">@color/brand_black_dark</item>
+        <item name="android:navigationBarColor">@color/brand_black_dark</item>
     </style>
 </resources>

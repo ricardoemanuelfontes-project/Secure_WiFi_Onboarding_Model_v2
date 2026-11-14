@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Cores da marca Reczi: o preto e o vermelho do ícone. -->
 <resources>
     <style name="Theme.Reczi" parent="android:Theme.Material.Light.DarkActionBar">
-        <item name="android:colorPrimary">@color/primary</item>
-        <item name="android:colorPrimaryDark">@color/primary_dark</item>
-        <item name="android:colorAccent">@color/primary</item>
+        <item name="android:colorPrimary">@color/brand_black</item>
+        <item name="android:colorPrimaryDark">@color/brand_black_dark</item>
+        <item name="android:colorAccent">@color/brand_red</item>
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:navigationBarColor">@color/brand_black_dark</item>
     </style>
-    <color name="primary">#1F5F8B</color>
-    <color name="primary_dark">#15435F</color>
+    <color name="brand_black">#121212</color>
+    <color name="brand_black_dark">#000000</color>
+    <color name="brand_red">#E53935</color>
+    <color name="brand_red_light">#FF6F60</color>
+    <color name="paper">#FAF7F5</color>
     <color name="icon_bg">#000000</color>
 </resources>

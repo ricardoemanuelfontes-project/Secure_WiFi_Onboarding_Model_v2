@@ -10,7 +10,7 @@
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="reczi-pgp"
+        android:label="Reczi cypher"
         android:supportsRtl="true"
         android:theme="@style/Theme.Reczi">
 

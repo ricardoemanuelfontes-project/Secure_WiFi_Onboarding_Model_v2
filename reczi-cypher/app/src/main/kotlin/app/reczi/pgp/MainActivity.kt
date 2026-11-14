@@ -8,7 +8,9 @@ import android.content.ClipboardManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -29,6 +31,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -92,11 +95,12 @@ class MainActivity : Activity() {
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             fitsSystemWindows = true
         }
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(BRAND_BLACK) }
         screens.forEachIndexed { i, s ->
             val b = Button(this, null, android.R.attr.buttonBarButtonStyle).apply {
                 text = s.title
                 isAllCaps = false
+                setTextColor(Color.WHITE)
                 setOnClickListener { if (loaded) show(i) }
             }
             tabButtons += b
@@ -154,9 +158,30 @@ class MainActivity : Activity() {
                 snap = s
                 loaded = true
                 if (firstTime) show(if (s.myKeys.isEmpty()) 0 else 3) else screens[current].refresh()
+                if (firstTime) warnExpiring(s)
                 then()
             }) { showOpenFailed(it) }
         }
+    }
+
+    /** Ao abrir a app, avisa das chaves (tuas e de contactos verificados) que expiram em breve. */
+    private fun warnExpiring(s: Snapshot) {
+        val lines = s.myKeys.map { "A tua chave" to it.info }
+            .plus(s.contacts.filter { it.verified }.map { "Contacto" to it.info })
+            .mapNotNull { (who, info) -> daysLeft(info)?.takeIf { it in 0..EXPIRY_WARN_DAYS }?.let { "$who ${info.userId}: faltam $it dia(s)" } }
+        if (lines.isEmpty()) return
+        alert(
+            "Chaves quase a expirar",
+            lines.joinToString("\n") + "\n\nAs tuas: usa \"Prolongar validade\" no separador Chaves e volta a enviar a chave pública. " +
+                "As dos contactos: pede-lhes a chave atualizada."
+        )
+    }
+
+    /** Dias até a chave expirar (negativo se já expirou); null se não tem data ou foi revogada. */
+    private fun daysLeft(info: KeyInfo): Long? {
+        val expires = info.expires ?: return null
+        if (info.revoked) return null
+        return Math.floorDiv(expires.time - System.currentTimeMillis(), 24 * 3600_000L)
     }
 
     /** Altera o cofre em segundo plano e volta a mostrar o separador com os dados novos. */
@@ -174,6 +199,10 @@ class MainActivity : Activity() {
         val text = runCatching { intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim() }.getOrNull()
         setIntent(Intent(this, MainActivity::class.java))
         if (text.isNullOrEmpty()) return alert("Partilha", "Não recebi texto. Partilha a mensagem ou a chave como texto.")
+        routeShared(Pgp.undisguise(text) ?: text) // texto disfarçado pela app: volta a PGP normal
+    }
+
+    private fun routeShared(text: String) {
         when {
             "BEGIN PGP MESSAGE" in text -> { show(3); (screens[3] as DecryptScreen).setMessage(text) }
             "BEGIN PGP PUBLIC KEY BLOCK" in text -> { show(1); (screens[1] as ContactsScreen).input.setText(text) }
@@ -189,7 +218,8 @@ class MainActivity : Activity() {
         screens[i].refresh()
         tabButtons.forEachIndexed { j, b ->
             b.setTypeface(null, if (j == i) Typeface.BOLD else Typeface.NORMAL)
-            b.alpha = if (j == i) 1f else 0.6f
+            b.setTextColor(if (j == i) BRAND_RED_LIGHT else Color.WHITE)
+            b.alpha = if (j == i) 1f else 0.75f
         }
     }
 
@@ -429,7 +459,7 @@ class MainActivity : Activity() {
 
     private fun copy(text: String, sensitive: Boolean) {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newPlainText("reczi-pgp", text)
+        val clip = ClipData.newPlainText("texto", text)
         if (sensitive) {
             // Pede ao teclado/sistema para não mostrar o conteúdo na pré-visualização (Android 13+).
             val key = if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE"
@@ -455,6 +485,22 @@ class MainActivity : Activity() {
     private fun share(text: String) {
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Partilhar"))
     }
+
+    /** Pergunta em que formato partilhar um texto PGP: normal ou disfarçado (ver Disguise no núcleo). */
+    private fun pickFormat(armored: String, then: (String) -> Unit) {
+        AlertDialog.Builder(this).setTitle("Formato")
+            .setItems(FORMATS) { _, i -> then(formatted(armored, i)) }
+            .setNegativeButton("Cancelar", null)
+            .showSecure()
+    }
+
+    private fun formatted(armored: String, format: Int): String = when (format) {
+        FORMAT_CODE -> Pgp.disguise(armored)
+        FORMAT_WORDS -> Pgp.disguise(armored, words = true)
+        else -> armored
+    }
+
+    private val prefs get() = getSharedPreferences("prefs", Context.MODE_PRIVATE)
 
     // ------------------------------------------------------------------ ajudas de interface
 
@@ -497,6 +543,12 @@ class MainActivity : Activity() {
         this.text = text
         isAllCaps = false
         setOnClickListener { onClick() }
+    }
+
+    /** Botão da ação principal do ecrã, na cor da marca. */
+    private fun primaryButton(text: String, onClick: () -> Unit) = button(text, onClick).apply {
+        backgroundTintList = ColorStateList.valueOf(BRAND_RED)
+        setTextColor(Color.WHITE)
     }
 
     private fun buttonRow(vararg buttons: Button) = LinearLayout(this).apply {
@@ -551,6 +603,8 @@ class MainActivity : Activity() {
         return when {
             info.revoked -> "REVOGADA - não uses esta chave" to red
             expires != null && expires.before(Date()) -> "EXPIRADA em ${fmt.format(expires)}" to red
+            expires != null && (daysLeft(info) ?: Long.MAX_VALUE) <= EXPIRY_WARN_DAYS ->
+                "Expira em ${daysLeft(info)} dia(s), a ${fmt.format(expires)}" to orange
             expires != null -> "Válida até ${fmt.format(expires)}" to null
             else -> "Sem data de validade" to null
         }
@@ -582,7 +636,7 @@ class MainActivity : Activity() {
             col.addView(heading("Criar uma chave nova"))
             col.addView(label("Usa uma frase longa como palavra-passe (5 ou mais palavras ao acaso). Sem ela ninguém consegue usar a tua chave, nem tu."))
             listOf(name, email, pass1, pass2).forEach { col.addView(it) }
-            col.addView(guard(button("Criar chave") { create() }))
+            col.addView(guard(primaryButton("Criar chave") { create() }))
             col.addView(heading("Importar a tua chave privada"))
             col.addView(label("Por exemplo, o ficheiro criado no computador com \"cofre backup\"."))
             col.addView(buttonRow(
@@ -637,8 +691,8 @@ class MainActivity : Activity() {
             c.addView(TextView(this@MainActivity).apply { text = v; color?.let { setTextColor(it) } })
             val pub = Pgp.armor(Pgp.certificateOf(k.ring))
             c.addView(buttonRow(
-                button("Partilhar pública") { share(pub) },
-                button("Copiar pública") { copy(pub, sensitive = false) },
+                button("Partilhar pública") { pickFormat(pub) { share(it) } },
+                button("Copiar pública") { pickFormat(pub) { copy(it, sensitive = false) } },
             ))
             c.addView(buttonRow(
                 button("Backup da privada…") { backup(info.fingerprint) },
@@ -736,7 +790,7 @@ class MainActivity : Activity() {
 
     /** Chaves públicas de outras pessoas. */
     private inner class ContactsScreen : Screen("Contactos") {
-        val input = textArea("Cola aqui a chave pública de alguém (-----BEGIN PGP PUBLIC KEY BLOCK-----)", 4, mono = true)
+        val input = textArea("Cola aqui a chave pública de alguém (normal ou disfarçada)", 4, mono = true)
         private val list = column(0)
         private val col = column()
         override val view: View = scroll(col)
@@ -747,7 +801,7 @@ class MainActivity : Activity() {
             col.addView(buttonRow(
                 button("Colar") { input.setText(pasteText()) },
                 button("De ficheiro…") { openFile(KIND_PUBLIC) },
-                guard(button("Importar") { importPublic(input.text.toString().toByteArray()) }),
+                guard(primaryButton("Importar") { importPublic(input.text.toString().toByteArray()) }),
             ))
             col.addView(heading("Destinatários"))
             col.addView(list)
@@ -784,7 +838,11 @@ class MainActivity : Activity() {
 
         fun importPublic(data: ByteArray) {
             if (data.isEmpty()) return
-            change("A importar…", { vault.importContacts(Pgp.parseCertificates(data)) }) { r ->
+            change("A importar…", {
+                // Uma chave disfarçada pela app volta primeiro a PGP normal.
+                val plain = Pgp.undisguise(String(data, Charsets.UTF_8))?.toByteArray() ?: data
+                vault.importContacts(Pgp.parseCertificates(plain))
+            }) { r ->
                 input.setText("")
                 val first = r.added.firstNotNullOfOrNull { fpr -> snap.contacts.firstOrNull { it.info.fingerprint == fpr } }
                 val verify = { if (first != null) showFingerprintAndVerify(first.info) }
@@ -801,10 +859,14 @@ class MainActivity : Activity() {
         val draft = textArea("Mensagem", 5)
         private val recipients = column(0)
         private val boxes = mutableListOf<Pair<CheckBox, String>>()
+        /** Destinatários a deixar escolhidos na próxima vez que o ecrã for mostrado (botão "Responder"). */
+        private var preselect: Set<String>? = null
         private val myKeySpinner = Spinner(this@MainActivity)
         private var myFprs = listOf<String>()
         private val ownWarning = label("").apply { visibility = View.GONE }
         private val sign = CheckBox(this@MainActivity).apply { text = "Assinar com a minha chave"; isChecked = true }
+        private val format = Spinner(this@MainActivity)
+        private val formatHint = label("")
         private val output = textArea("", 5, mono = true).apply { keyListener = null; setTextIsSelectable(true) }
         private val outBox = column(0)
         private val col = column()
@@ -815,11 +877,27 @@ class MainActivity : Activity() {
             col.addView(draft)
             col.addView(heading("Para"))
             col.addView(recipients)
-            col.addView(label("A mensagem também é encriptada para ti, para a conseguires reler."))
+            col.addView(label("A mensagem também é sempre encriptada para a tua chave, para a conseguires reler."))
             col.addView(ownWarning)
             col.addView(myKeySpinner)
             col.addView(sign)
-            col.addView(button("Encriptar") { encrypt() })
+            col.addView(heading("Formato"))
+            format.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, FORMATS)
+            format.setSelection(prefs.getInt(PREF_FORMAT, FORMAT_PGP).coerceIn(0, FORMATS.size - 1))
+            format.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, v: View?, position: Int, id: Long) {
+                    prefs.edit().putInt(PREF_FORMAT, position).apply()
+                    formatHint.text = when (position) {
+                        FORMAT_CODE -> "Parece um código ao acaso; não se vê que é PGP. Só quem usa o Reczi cypher o consegue abrir."
+                        FORMAT_WORDS -> "Parece uma lista de palavras soltas (fica bem mais comprido). Só quem usa o Reczi cypher o consegue abrir."
+                        else -> "Mensagem PGP normal: abre em qualquer programa OpenPGP (GnuPG, etc.), mas vê-se logo que é PGP."
+                    }
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
+            col.addView(format)
+            col.addView(formatHint)
+            col.addView(primaryButton("Encriptar") { encrypt() })
             outBox.addView(heading("Mensagem encriptada"))
             outBox.addView(output)
             outBox.addView(buttonRow(
@@ -831,29 +909,42 @@ class MainActivity : Activity() {
             col.addView(outBox)
         }
 
+        /** Prepara uma resposta: fica escolhido só este destinatário. */
+        fun replyTo(fingerprint: String) {
+            preselect = setOf(fingerprint)
+            draft.setText("")
+            output.setText("")
+            outBox.visibility = View.GONE
+        }
+
         override fun refresh() {
-            val checked = boxes.filter { it.first.isChecked }.map { it.second }.toSet()
+            val checked = preselect ?: boxes.filter { it.first.isChecked }.map { it.second }.toSet()
+            preselect = null
             recipients.removeAllViews()
             boxes.clear()
-            val verified = snap.contacts.filter { it.verified }.sortedBy { it.info.userId.lowercase() }
-            if (verified.isEmpty()) {
-                recipients.addView(label("Ainda não tens destinatários verificados. Adiciona-os no separador Contactos."))
-            }
-            verified.forEach { c ->
-                val usable = c.info.canEncrypt
+            fun add(name: String, fpr: String, usable: Boolean, why: String) {
                 val cb = CheckBox(this@MainActivity).apply {
-                    text = if (usable) c.info.userId else "${c.info.userId} (${if (c.info.revoked) "revogada" else "expirada"})"
+                    text = if (usable) name else "$name ($why)"
                     isEnabled = usable
-                    isChecked = usable && c.info.fingerprint in checked
+                    isChecked = usable && fpr in checked
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
                 }
-                if (usable) boxes += cb to c.info.fingerprint
+                if (usable) boxes += cb to fpr
                 recipients.addView(cb)
             }
+            // As tuas próprias chaves: para guardares uma nota só para ti, ou enviares entre as tuas chaves.
             val mine = snap.myKeys.map { it.info }.filter { it.canEncrypt }
+            mine.forEach { add("Eu: ${it.userId}", it.fingerprint, true, "") }
+            val verified = snap.contacts.filter { it.verified }.sortedBy { it.info.userId.lowercase() }
+            verified.forEach { c -> add(c.info.userId, c.info.fingerprint, c.info.canEncrypt, if (c.info.revoked) "revogada" else "expirada") }
+            if (verified.isEmpty()) {
+                recipients.addView(label("Ainda não tens destinatários verificados. Adiciona-os no separador Contactos."))
+            }
             myFprs = mine.map { it.fingerprint }
+            val selected = myKeySpinner.selectedItemPosition
             myKeySpinner.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, mine.map { "De: ${it.userId}" })
+            if (selected in mine.indices) myKeySpinner.setSelection(selected)
             myKeySpinner.visibility = if (mine.size > 1) View.VISIBLE else View.GONE
             if (snap.myKeys.isNotEmpty() && mine.isEmpty()) {
                 ownWarning.text = "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves."
@@ -874,15 +965,16 @@ class MainActivity : Activity() {
             val text = draft.text.toString()
             val to = boxes.filter { it.first.isChecked }.map { it.second }
             val me = myFprs.getOrNull(myKeySpinner.selectedItemPosition.coerceAtLeast(0))
+            val fmt = format.selectedItemPosition
             when {
                 text.isEmpty() -> return alert("Encriptar", "Escreve primeiro a mensagem.")
-                to.isEmpty() -> return alert("Encriptar", "Escolhe pelo menos um destinatário.")
                 me == null && snap.myKeys.isNotEmpty() -> return alert("Encriptar", "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves.")
                 me == null -> return alert("Encriptar", "Cria primeiro a tua chave no separador Chaves.")
+                to.isEmpty() -> return alert("Encriptar", "Escolhe pelo menos um destinatário (podes escolher-te a ti).")
             }
             val run = { chars: CharArray? ->
                 work("A encriptar…", {
-                    try { vault.encrypt(text, to, me!!, chars != null, chars) } finally { chars?.fill('\u0000') }
+                    try { formatted(vault.encrypt(text, to, me!!, chars != null, chars), fmt) } finally { chars?.fill('\u0000') }
                 }) {
                     output.setText(it)
                     outBox.visibility = View.VISIBLE
@@ -894,12 +986,16 @@ class MainActivity : Activity() {
     }
 
     private inner class DecryptScreen : Screen("Desencriptar") {
-        private val input = textArea("Cola aqui a mensagem (-----BEGIN PGP MESSAGE-----)", 5, mono = true)
+        private val input = textArea("Cola aqui a mensagem (normal ou disfarçada)", 5, mono = true)
         private val fileLabel = label("").apply { visibility = View.GONE }
         private var fileMessage: String? = null
         private val status = TextView(this@MainActivity).apply { setPadding(0, dp(8), 0, dp(8)) }
         // Não selecionável: copiar só pelo botão, que marca o texto como sensível e o limpa depois.
         private val output = TextView(this@MainActivity).apply { setTextIsSelectable(false); textSize = 16f }
+        private var replyFpr: String? = null
+        private val reply = button("Responder") {
+            replyFpr?.let { fpr -> (screens[2] as EncryptScreen).replyTo(fpr); show(2) }
+        }.apply { visibility = View.GONE }
         private val outBox = column(0)
         private val col = column()
         override val view: View = scroll(col)
@@ -911,7 +1007,7 @@ class MainActivity : Activity() {
             col.addView(buttonRow(
                 button("Colar") { setMessage(pasteText()) },
                 button("De ficheiro…") { openFile(KIND_MESSAGE) },
-                button("Desencriptar") { decrypt() },
+                primaryButton("Desencriptar") { decrypt() },
             ))
             outBox.addView(heading("Mensagem original"))
             outBox.addView(status)
@@ -920,6 +1016,7 @@ class MainActivity : Activity() {
                 button("Copiar (limpa após ~45 s)") { copy(output.text.toString(), sensitive = true) },
                 button("Limpar") { clearSensitive() },
             ))
+            outBox.addView(reply)
             outBox.visibility = View.GONE
             col.addView(outBox)
             input.addTextChangedListener(object : TextWatcher {
@@ -952,6 +1049,8 @@ class MainActivity : Activity() {
         override fun clearSensitive() {
             output.text = ""
             status.text = ""
+            replyFpr = null
+            reply.visibility = View.GONE
             outBox.visibility = View.GONE
         }
 
@@ -984,6 +1083,15 @@ class MainActivity : Activity() {
             }
             status.text = text
             status.setTextColor(color)
+            // Responder: só a quem assinou com uma chave que já verificaste e que ainda serve para encriptar.
+            val signer = (r.signature as? SignatureStatus.Valid)?.fingerprint?.takeIf { r.signerVerified }
+            val known = snap.contacts.firstOrNull { it.info.fingerprint == signer && it.verified && it.info.canEncrypt }?.info
+                ?: snap.myKeys.firstOrNull { it.info.fingerprint == signer && it.info.canEncrypt }?.info
+            replyFpr = known?.fingerprint
+            reply.text = "Responder a ${known?.userId ?: ""}"
+            reply.maxLines = 1
+            reply.ellipsize = TextUtils.TruncateAt.END
+            reply.visibility = if (known != null) View.VISIBLE else View.GONE
             output.text = r.text
             outBox.visibility = View.VISIBLE
             output.post { (view as ScrollView).smoothScrollTo(0, outBox.top) }
@@ -999,6 +1107,16 @@ class MainActivity : Activity() {
         const val KIND_PRIVATE = "private"
         const val KIND_PUBLIC = "public"
         const val KIND_MESSAGE = "message"
+        const val PREF_FORMAT = "format"
+        const val FORMAT_PGP = 0
+        const val FORMAT_CODE = 1
+        const val FORMAT_WORDS = 2
+        val FORMATS = arrayOf("PGP normal", "Disfarçado: código", "Disfarçado: palavras")
+        const val EXPIRY_WARN_DAYS = 30L
+        /** Cores da marca Reczi: o preto e o vermelho do ícone. */
+        const val BRAND_BLACK = 0xFF121212.toInt()
+        const val BRAND_RED = 0xFFE53935.toInt()
+        const val BRAND_RED_LIGHT = 0xFFFF6F60.toInt()
         /** MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED (API 29), também enviado em versões anteriores. */
         const val FLAG_PARTIALLY_OBSCURED = 0x2
     }
