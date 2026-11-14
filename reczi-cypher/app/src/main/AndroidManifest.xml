@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Sem acesso à Internet nem a nada do telemóvel. A única permissão serve para esconder
-     janelas de outras apps por cima desta (Android 12+), contra ataques de sobreposição. -->
+<!-- Sem acesso à Internet. Permissões: esconder janelas de outras apps por cima desta
+     (Android 12+, contra ataques de sobreposição) e a câmara, pedida só quando carregas em
+     "Ler QR" (as imagens não são guardadas). A app funciona sem câmara. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:allowBackup="false"

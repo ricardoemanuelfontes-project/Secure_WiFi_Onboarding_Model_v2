@@ -12,6 +12,32 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 - **Desencriptar**: mostra o texto só depois de confirmar a integridade, e diz quem assinou.
   O botão "Responder" abre o Encriptar já com o remetente escolhido.
 - **Avisos de validade**: ao abrir, a app avisa das chaves que expiram nos próximos 30 dias.
+- **Só assinar**: em Encriptar, "Só assinar" assina um texto sem o encriptar (fica legível por
+  todos, serve para provar que é teu). Em Desencriptar, um texto assinado é verificado.
+- **Ficheiros e fotografias**: "Encriptar um ficheiro…" usa os destinatários escolhidos e guarda
+  um `.pgp` normal (abre também no GnuPG); "Desencriptar um ficheiro…" faz o inverso. Se a
+  desencriptação falhar, o ficheiro incompleto é apagado.
+- **Notas**: bloco de notas encriptado para as tuas chaves. Guardar não pede nada; ler pede a
+  palavra-passe. O título de cada nota fica visível na lista e não é protegido pela palavra-passe.
+- **QR**: "Mostrar QR" mostra a tua chave pública; "Ler QR" em Contactos importa a de outra pessoa
+  com a câmara (ou de uma fotografia). A verificação da impressão digital continua a ser pedida.
+- **Backup em papel**: imprime a chave privada (protegida pela palavra-passe) em QR e em texto;
+  restaura-se em Chaves > Importar > Ler QR.
+
+## Bloqueio da app
+
+No fim do separador Chaves:
+
+- **Impressão digital / bloqueio do telemóvel**: pedido ao abrir e depois de 1 minuto fora da app.
+- **PIN da app**: um PIN próprio (guardado só como scrypt com sal). A partir da 5.ª tentativa
+  errada, há uma espera que vai duplicando.
+- **PIN de pânico**: escrito no ecrã de bloqueio, apaga tudo (ficheiros do cofre e a chave do
+  Keystore) e abre a app vazia. Não há volta.
+
+O bloqueio é uma porta, não uma cifra: trava quem pega no telemóvel desbloqueado. A chave do
+Keystore não fica presa à impressão digital, de propósito: o Android destrói chaves dessas quando
+se tira o bloqueio de ecrã, e o cofre perdia-se. As chaves privadas continuam protegidas pela
+palavra-passe OpenPGP, que é sempre pedida.
 
 ## Modo disfarçado
 
@@ -47,10 +73,10 @@ Limites do disfarce sem código secreto, para não haver ilusões:
 
 ## Segurança
 
-- **Sem Internet**: a app não tem acesso à rede nem a nada no telemóvel. Os ficheiros só
-  entram e saem quando os escolhes. A única permissão (`HIDE_OVERLAY_WINDOWS`) serve para
-  esconder janelas de outras apps por cima desta (Android 12+), e os toques são ignorados
-  quando há algo por cima.
+- **Sem Internet**: a app não tem acesso à rede. Os ficheiros só entram e saem quando os
+  escolhes. Permissões: `HIDE_OVERLAY_WINDOWS`, para esconder janelas de outras apps por cima
+  desta (Android 12+; os toques são ignorados quando há algo por cima), e `CAMERA`, pedida só
+  quando carregas em "Ler QR" (as imagens não são guardadas, e podes recusar e usar uma fotografia).
 - **Chaves privadas protegidas em duas camadas**:
   1. A palavra-passe OpenPGP (mínimo 12 caracteres): AES-256, SHA-512 iterado com sal,
      65 011 712 iterações. É o máximo do formato que o GnuPG 2.4 também aceita.
@@ -70,7 +96,7 @@ Limites do disfarce sem código secreto, para não haver ilusões:
   chave do Keystore, a app avisa e não apaga nada.
 - **Mensagens em claro** são apagadas do ecrã quando ficas mais de 5 minutos fora da app.
 - **Criptografia**: feita pelo [PGPainless](https://pgpainless.org) 1.7.8 / BouncyCastle 1.82.
-  Não há criptografia própria.
+  Não há criptografia própria no OpenPGP. Os códigos QR usam o ZXing 3.5.3.
 
 ## Estrutura
 

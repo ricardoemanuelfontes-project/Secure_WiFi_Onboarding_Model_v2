@@ -20,6 +20,8 @@ kotlin {
 
 dependencies {
     api("org.pgpainless:pgpainless-core:1.7.8")
+    // Códigos QR (gerar e ler): Java puro, sem Android nem rede.
+    api("com.google.zxing:core:3.5.3")
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
 }

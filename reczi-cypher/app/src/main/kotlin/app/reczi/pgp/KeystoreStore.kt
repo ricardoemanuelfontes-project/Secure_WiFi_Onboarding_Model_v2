@@ -101,6 +101,22 @@ class KeystoreStore(context: Context) : Store {
         key = null
     }
 
+    /**
+     * PIN de pânico: apaga tudo, sem volta. Além dos ficheiros (incluindo os postos de lado), destrói
+     * as chaves do Keystore, por isso mesmo que alguém recupere os ficheiros do armazenamento do
+     * telemóvel já não há chave para os abrir.
+     */
+    @Synchronized
+    fun wipe() {
+        key = null
+        runCatching {
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            ks.aliases().toList().filter { it.startsWith(DEFAULT_ALIAS) }.forEach { ks.deleteEntry(it) }
+        }
+        base.listFiles()?.filter { it.name.startsWith("vault") }?.forEach { it.deleteRecursively() }
+        dir.mkdirs()
+    }
+
     /** true se há ficheiros no cofre mas a chave do Keystore que os protegia desapareceu. */
     @Synchronized
     fun isKeyLost(): Boolean {

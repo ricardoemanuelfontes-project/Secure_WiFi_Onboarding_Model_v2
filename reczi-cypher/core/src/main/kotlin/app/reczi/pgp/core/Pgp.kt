@@ -14,6 +14,7 @@ import org.pgpainless.algorithm.KeyFlag
 import org.pgpainless.algorithm.SymmetricKeyAlgorithm
 import org.pgpainless.decryption_verification.ConsumerOptions
 import org.pgpainless.decryption_verification.MessageInspector
+import org.pgpainless.decryption_verification.MessageMetadata
 import org.pgpainless.decryption_verification.MissingKeyPassphraseStrategy
 import org.pgpainless.encryption_signing.EncryptionOptions
 import org.pgpainless.encryption_signing.ProducerOptions
@@ -30,6 +31,8 @@ import org.pgpainless.key.protection.SecretKeyRingProtector
 import org.pgpainless.key.protection.UnlockSecretKey
 import org.pgpainless.util.Passphrase
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.Calendar
 import java.util.Date
 
@@ -81,6 +84,9 @@ object Pgp {
 
     /** Limite do texto desencriptado (protege contra "bombas" de compressão). */
     const val MAX_PLAINTEXT = 4 shl 20
+
+    /** Limite de um ficheiro desencriptado (2 GB). */
+    const val MAX_FILE = 2L shl 30
 
     /** Cria um par de chaves Curve25519 (como o GnuPG): primária ed25519 só para certificar,
      *  subchave ed25519 para assinar e subchave cv25519 para encriptar. */
@@ -353,6 +359,33 @@ object Pgp {
         signer: PGPSecretKeyRing?,
         passphrase: CharArray?,
     ): String {
+        val out = ByteArrayOutputStream()
+        produce(text.toByteArray(Charsets.UTF_8).inputStream(), out, recipients, signer, passphrase, armor = true, fileName = null)
+        return out.toString(Charsets.UTF_8.name())
+    }
+
+    /**
+     * Encripta um ficheiro (fotografia, documento...) de [input] para [output], em OpenPGP binário
+     * (o formato dos ficheiros .pgp/.gpg). O nome original vai guardado dentro da parte encriptada.
+     */
+    fun encryptFile(
+        input: InputStream,
+        output: OutputStream,
+        fileName: String?,
+        recipients: List<PGPPublicKeyRing>,
+        signer: PGPSecretKeyRing?,
+        passphrase: CharArray?,
+    ) = produce(input, output, recipients, signer, passphrase, armor = false, fileName = fileName)
+
+    private fun produce(
+        input: InputStream,
+        output: OutputStream,
+        recipients: List<PGPPublicKeyRing>,
+        signer: PGPSecretKeyRing?,
+        passphrase: CharArray?,
+        armor: Boolean,
+        fileName: String?,
+    ) {
         if (recipients.isEmpty()) throw PgpError("Escolhe pelo menos um destinatário.")
         val enc = EncryptionOptions.encryptCommunications()
         for (r in recipients) {
@@ -365,35 +398,73 @@ object Pgp {
         val pp = passphrase?.let { Passphrase(it.copyOf()) }
         try {
             val options = if (signer != null) {
-                val signing = try {
-                    SigningOptions.get().addInlineSignature(
-                        SecretKeyRingProtector.unlockAnyKeyWith(pp ?: Passphrase.emptyPassphrase()),
-                        signer,
-                        DocumentSignatureType.BINARY_DOCUMENT,
-                    )
-                } catch (e: WrongPassphraseException) {
-                    throw WrongPassphraseError(e)
-                } catch (e: PgpError) {
-                    throw e
-                } catch (e: Exception) {
-                    val stub = signer.secretKeys.asSequence().any { it.isPrivateKeyEmpty }
-                    throw PgpError(
-                        if (stub) "A parte de assinatura da tua chave não está neste telemóvel (está num cartão/smartcard?). Desliga \"Assinar\"."
-                        else "A tua chave não pode assinar (expirada ou revogada?).", e,
-                    )
-                }
-                ProducerOptions.signAndEncrypt(enc, signing)
+                ProducerOptions.signAndEncrypt(enc, signing(signer, pp, detached = false))
             } else {
                 ProducerOptions.encrypt(enc)
             }
-            options.setAsciiArmor(true)
-            val out = ByteArrayOutputStream()
-            PGPainless.encryptAndOrSign().onOutputStream(out).withOptions(options).use {
-                it.write(text.toByteArray(Charsets.UTF_8))
-            }
-            return out.toString(Charsets.UTF_8.name())
+            options.setAsciiArmor(armor)
+            if (fileName != null) options.setFileName(displayName(fileName).replace('/', '_'))
+            PGPainless.encryptAndOrSign().onOutputStream(output).withOptions(options).use { input.copyTo(it, 64 * 1024) }
         } finally {
             pp?.clear()
+        }
+    }
+
+    private fun signing(signer: PGPSecretKeyRing, pp: Passphrase?, detached: Boolean): SigningOptions = try {
+        val protector = SecretKeyRingProtector.unlockAnyKeyWith(pp ?: Passphrase.emptyPassphrase())
+        if (detached) SigningOptions.get().addDetachedSignature(protector, signer, DocumentSignatureType.CANONICAL_TEXT_DOCUMENT)
+        else SigningOptions.get().addInlineSignature(protector, signer, DocumentSignatureType.BINARY_DOCUMENT)
+    } catch (e: WrongPassphraseException) {
+        throw WrongPassphraseError(e)
+    } catch (e: PgpError) {
+        throw e
+    } catch (e: Exception) {
+        val stub = signer.secretKeys.asSequence().any { it.isPrivateKeyEmpty }
+        throw PgpError(
+            if (stub) "A parte de assinatura da tua chave não está neste telemóvel (está num cartão/smartcard?). Desliga \"Assinar\"."
+            else "A tua chave não pode assinar (expirada ou revogada?).", e,
+        )
+    }
+
+    /**
+     * Assina um texto SEM o encriptar: o texto fica legível por toda a gente, com a assinatura por
+     * baixo ("-----BEGIN PGP SIGNED MESSAGE-----"). Serve para provar que um texto público é teu.
+     */
+    fun sign(text: String, signer: PGPSecretKeyRing, passphrase: CharArray): String {
+        if (text.isBlank()) throw PgpError("Escreve primeiro o texto.")
+        val pp = Passphrase(passphrase.copyOf())
+        try {
+            val options = ProducerOptions.sign(signing(signer, pp, detached = true)).setCleartextSigned()
+            val out = ByteArrayOutputStream()
+            PGPainless.encryptAndOrSign().onOutputStream(out).withOptions(options).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            return out.toString(Charsets.UTF_8.name())
+        } finally {
+            pp.clear()
+        }
+    }
+
+    fun isSignedText(text: String): Boolean = text.trimStart().startsWith("-----BEGIN PGP SIGNED MESSAGE-----")
+
+    /** Verifica um texto assinado (ver [sign]) e devolve o texto e o estado da assinatura. */
+    fun verify(message: String, verificationCerts: List<PGPPublicKeyRing>): Decrypted {
+        if (!isSignedText(message)) throw PgpError("Isto não é um texto assinado.")
+        try {
+            val options = ConsumerOptions.get()
+            val certs = dedupe(verificationCerts)
+            certs.forEach { options.addVerificationCert(it) }
+            val out = ByteArrayOutputStream()
+            val stream = PGPainless.decryptAndOrVerify()
+                .onInputStream(message.trimStart().toByteArray(Charsets.UTF_8).inputStream())
+                .withOptions(options)
+            stream.use { copyLimited(it, out, MAX_PLAINTEXT.toLong()) }
+            val plaintext = out.toByteArray()
+            val status = signatureStatus(stream.metadata, certs, plaintext)
+            if (status == SignatureStatus.None) throw PgpError("Não encontrei nenhuma assinatura neste texto.")
+            return Decrypted(String(plaintext, Charsets.UTF_8), status)
+        } catch (e: PgpError) {
+            throw e
+        } catch (e: Exception) {
+            throw PgpError("O texto assinado está danificado; não é possível verificá-lo.", e)
         }
     }
 
@@ -411,7 +482,59 @@ object Pgp {
         passphrase: CharArray,
         verificationCerts: List<PGPPublicKeyRing>,
     ): Decrypted {
-        val recipients = recipientKeyIds(message).toSet()
+        val out = ByteArrayOutputStream()
+        val bytes = message.toByteArray(Charsets.UTF_8)
+        val r = consume({ bytes.inputStream() }, out, MAX_PLAINTEXT.toLong(), myKeys, passphrase, verificationCerts) { out.toByteArray() }
+        return Decrypted(String(out.toByteArray(), Charsets.UTF_8), r.signature)
+    }
+
+    /**
+     * Desencripta um ficheiro encriptado (.pgp/.gpg, binário ou armorado) de [open] para [output].
+     * [open] é chamado duas vezes (ver para quem é, depois desencriptar). Em [Decrypted.text] vem o
+     * nome original do ficheiro, se a mensagem o trouxer.
+     *
+     * ATENÇÃO: os bytes vão sendo escritos em [output] antes de a integridade estar confirmada.
+     * Se esta função lançar um erro, quem a chamou tem de APAGAR o que foi escrito.
+     */
+    fun decryptFile(
+        open: () -> InputStream,
+        output: OutputStream,
+        myKeys: List<PGPSecretKeyRing>,
+        passphrase: CharArray,
+        verificationCerts: List<PGPPublicKeyRing>,
+        limit: Long = MAX_FILE,
+    ): Decrypted = consume(open, output, limit, myKeys, passphrase, verificationCerts, null)
+
+    /** Ids das chaves para as quais um ficheiro encriptado foi feito (0 = destinatário oculto). */
+    fun recipientKeyIds(input: InputStream): List<Long> = try {
+        MessageInspector.determineEncryptionInfoForMessage(input).keyIds
+    } catch (e: Exception) {
+        throw PgpError("Não reconheço isto como um ficheiro encriptado com PGP.", e)
+    }
+
+    private fun copyLimited(input: InputStream, out: OutputStream, limit: Long) {
+        val buf = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > limit) throw PgpError("O conteúdo é demasiado grande.")
+            out.write(buf, 0, n)
+        }
+    }
+
+    /** [plaintext]: dá os bytes já escritos (mensagens de texto); null nos ficheiros, que não ficam em memória. */
+    private fun consume(
+        open: () -> InputStream,
+        out: OutputStream,
+        limit: Long,
+        myKeys: List<PGPSecretKeyRing>,
+        passphrase: CharArray,
+        verificationCerts: List<PGPPublicKeyRing>,
+        plaintext: (() -> ByteArray)?,
+    ): Decrypted {
+        val recipients = open().use { recipientKeyIds(it) }.toSet()
         val pp = Passphrase(passphrase.copyOf())
         try {
             // Só entram as chaves que a palavra-passe abre: com várias chaves e palavras-passe
@@ -426,38 +549,14 @@ object Pgp {
             val certs = dedupe(verificationCerts)
             certs.forEach { options.addVerificationCert(it) }
 
-            val out = ByteArrayOutputStream()
-            val stream = PGPainless.decryptAndOrVerify()
-                .onInputStream(message.toByteArray(Charsets.UTF_8).inputStream())
-                .withOptions(options)
-            stream.use { s ->
-                val buf = ByteArray(16 * 1024)
-                while (true) {
-                    val n = s.read(buf)
-                    if (n < 0) break
-                    if (out.size() + n > MAX_PLAINTEXT) throw PgpError("A mensagem é demasiado grande para mostrar.")
-                    out.write(buf, 0, n)
-                }
+            val stream = open().use { input ->
+                val s = PGPainless.decryptAndOrVerify().onInputStream(input).withOptions(options)
+                s.use { copyLimited(it, out, limit) }
+                s
             }
             val meta = stream.metadata
             if (!meta.isEncrypted) throw PgpError("Esta mensagem não está encriptada.")
-
-            val plaintext = out.toByteArray()
-            val rejectedKnown = meta.rejectedSignatures.map { it.signature }.filter { sig -> certs.any { it.getPublicKey(sig.keyID) != null } }
-            val status = when {
-                rejectedKnown.isNotEmpty() -> {
-                    val sig = rejectedKnown.first()
-                    val owner = certs.first { it.getPublicKey(sig.keyID) != null }
-                    // Distingue "não confere" (alterada/falsa) de "confere mas a chave já não é aceite".
-                    if (mathematicallyValid(sig, owner.getPublicKey(sig.keyID), plaintext)) SignatureStatus.Rejected(fingerprint(owner))
-                    else SignatureStatus.Invalid
-                }
-                meta.verifiedSignatures.isNotEmpty() ->
-                    SignatureStatus.Valid(meta.verifiedSignatures.first().signingKey.primaryKeyFingerprint.fingerprint)
-                meta.hasSignature -> SignatureStatus.UnknownSigner
-                else -> SignatureStatus.None
-            }
-            return Decrypted(String(plaintext, Charsets.UTF_8), status)
+            return Decrypted(meta.filename?.takeIf { it.isNotBlank() }?.let(::displayName).orEmpty(), signatureStatus(meta, certs, plaintext?.invoke()))
         } catch (e: PgpError) {
             throw e
         } catch (e: WrongPassphraseException) {
@@ -472,6 +571,25 @@ object Pgp {
             throw PgpError("A mensagem está danificada ou foi alterada; não é possível desencriptá-la.", e)
         } finally {
             pp.clear()
+        }
+    }
+
+    private fun signatureStatus(meta: MessageMetadata, certs: List<PGPPublicKeyRing>, plaintext: ByteArray?): SignatureStatus {
+        val rejectedKnown = meta.rejectedSignatures.map { it.signature }.filter { sig -> certs.any { it.getPublicKey(sig.keyID) != null } }
+        return when {
+            rejectedKnown.isNotEmpty() -> {
+                val sig = rejectedKnown.first()
+                val owner = certs.first { it.getPublicKey(sig.keyID) != null }
+                // Distingue "não confere" (alterada/falsa) de "confere mas a chave já não é aceite".
+                // Nos ficheiros (sem os bytes em memória) vale o estado da chave de quem assinou.
+                val keyProblem = if (plaintext != null) mathematicallyValid(sig, owner.getPublicKey(sig.keyID), plaintext)
+                else runCatching { !info(owner).canSign }.getOrDefault(false)
+                if (keyProblem) SignatureStatus.Rejected(fingerprint(owner)) else SignatureStatus.Invalid
+            }
+            meta.verifiedSignatures.isNotEmpty() ->
+                SignatureStatus.Valid(meta.verifiedSignatures.first().signingKey.primaryKeyFingerprint.fingerprint)
+            meta.hasSignature -> SignatureStatus.UnknownSigner
+            else -> SignatureStatus.None
         }
     }
 

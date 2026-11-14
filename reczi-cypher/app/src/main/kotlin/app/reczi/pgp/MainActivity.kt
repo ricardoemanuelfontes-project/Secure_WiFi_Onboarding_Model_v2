@@ -1,30 +1,39 @@
 package app.reczi.pgp
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.KeyguardManager
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
 import android.os.SystemClock
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -37,6 +46,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -48,9 +58,13 @@ import app.reczi.pgp.core.Contact
 import app.reczi.pgp.core.DecryptResult
 import app.reczi.pgp.core.Disguise
 import app.reczi.pgp.core.KeyInfo
+import app.reczi.pgp.core.Lock
 import app.reczi.pgp.core.MyKey
+import app.reczi.pgp.core.Note
 import app.reczi.pgp.core.Pgp
 import app.reczi.pgp.core.PgpError
+import app.reczi.pgp.core.PinResult
+import app.reczi.pgp.core.Qr
 import app.reczi.pgp.core.SignatureStatus
 import app.reczi.pgp.core.Snapshot
 import app.reczi.pgp.core.Vault
@@ -78,7 +92,19 @@ class MainActivity : Activity() {
     // Pedidos ao seletor de ficheiros: guardados no estado para sobreviverem à recriação da atividade.
     private var pendingOpen: String? = null
     private var pendingBackupFpr: String? = null
+    /** Encriptar/desencriptar ficheiros: o ficheiro de entrada já escolhido e o que fazer com ele. */
+    private var pendingIn: String? = null
+    private var pendingSave: String? = null
+    /** Leitura de QR à espera da permissão da câmara. */
+    private var pendingScan: String? = null
     private var stoppedAt = 0L
+
+    // Bloqueio da app (PIN próprio e/ou impressão digital / bloqueio do telemóvel).
+    private var locked = false
+    private var hasPin = false
+    private var hasPanic = false
+    private var everLoaded = false
+    private var pendingShare: Intent? = null
 
     // ------------------------------------------------------------------ ciclo de vida
 
@@ -89,8 +115,11 @@ class MainActivity : Activity() {
         vault = Vaults.vault(this)
         pendingOpen = savedInstanceState?.getString(STATE_OPEN)
         pendingBackupFpr = savedInstanceState?.getString(STATE_BACKUP)
+        pendingIn = savedInstanceState?.getString(STATE_IN)
+        pendingSave = savedInstanceState?.getString(STATE_SAVE)
+        pendingScan = savedInstanceState?.getString(STATE_SCAN)
 
-        screens = listOf(KeysScreen(), ContactsScreen(), EncryptScreen(), DecryptScreen())
+        screens = listOf(KeysScreen(), ContactsScreen(), EncryptScreen(), DecryptScreen(), NotesScreen())
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -102,7 +131,13 @@ class MainActivity : Activity() {
                 text = s.title
                 isAllCaps = false
                 setTextColor(Color.WHITE)
-                setOnClickListener { if (loaded) show(i) }
+                // Cinco separadores: o texto encolhe para caber numa linha em ecrãs estreitos.
+                maxLines = 1
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(2), paddingTop, dp(2), paddingBottom)
+                setAutoSizeTextTypeUniformWithConfiguration(8, 14, 1, TypedValue.COMPLEX_UNIT_SP)
+                setOnClickListener { if (loaded && !locked) show(i) }
             }
             tabButtons += b
             bar.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -114,18 +149,21 @@ class MainActivity : Activity() {
 
         val fromHistory = (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
         val share = if (savedInstanceState == null && !fromHistory) intent else null
-        load(firstTime = true) { handleShare(share) }
+        startup(share)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (loaded) handleShare(intent)
+        if (loaded && !locked) handleShare(intent) else pendingShare = intent
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_OPEN, pendingOpen)
         outState.putString(STATE_BACKUP, pendingBackupFpr)
+        outState.putString(STATE_IN, pendingIn)
+        outState.putString(STATE_SAVE, pendingSave)
+        outState.putString(STATE_SCAN, pendingScan)
     }
 
     override fun onStop() {
@@ -136,9 +174,11 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         // Ao fim de 5 minutos fora da app, apaga do ecrã as mensagens em claro.
-        if (stoppedAt != 0L && SystemClock.elapsedRealtime() - stoppedAt > 5 * 60_000) {
-            screens.forEach { it.clearSensitive() }
-        }
+        val away = if (stoppedAt == 0L) 0L else SystemClock.elapsedRealtime() - stoppedAt
+        if (away > 5 * 60_000) screens.forEach { it.clearSensitive() }
+        // Volta a bloquear ao fim de um minuto fora da app (mas não a meio de escolher um ficheiro).
+        val picking = pendingOpen != null || pendingBackupFpr != null || pendingSave != null
+        if (away > LOCK_AFTER_MS && loaded && !locked && !picking && lockEnabled()) showLock()
     }
 
     override fun onDestroy() {
@@ -158,10 +198,166 @@ class MainActivity : Activity() {
             r.fold({ s ->
                 snap = s
                 loaded = true
+                everLoaded = true
                 if (firstTime) show(if (s.myKeys.isEmpty()) 0 else 3) else screens[current].refresh()
                 if (firstTime) warnExpiring(s)
                 then()
             }) { showOpenFailed(it) }
+        }
+    }
+
+    // ------------------------------------------------------------------ bloqueio da app
+
+    private fun lockEnabled() = hasPin || prefs.getBoolean(PREF_LOCK_BIO, false)
+
+    /** Ao abrir: vê se há PIN da app e mostra o ecrã de bloqueio, ou abre logo o cofre. */
+    private fun startup(share: Intent?) {
+        pendingShare = share
+        work("A abrir…", {
+            // Se o cofre não se consegue ler, segue para o ecrã de recuperação (sem bloqueio).
+            runCatching { if (store.isKeyLost()) false to false else vault.hasPin() to vault.hasPanicPin() }.getOrDefault(false to false)
+        }) { (pin, panic) ->
+            hasPin = pin
+            hasPanic = panic
+            if (lockEnabled()) showLock() else unlocked()
+        }
+    }
+
+    private fun unlocked() {
+        locked = false
+        val share = pendingShare
+        pendingShare = null
+        if (everLoaded) {
+            loaded = true
+            show(current)
+            handleShare(share)
+        } else {
+            load(firstTime = true) { handleShare(share) }
+        }
+    }
+
+    private fun showLock() {
+        locked = true
+        content.removeAllViews()
+        tabButtons.forEach { it.alpha = 0.4f }
+        val bio = prefs.getBoolean(PREF_LOCK_BIO, false)
+        val col = column(dp(24))
+        col.addView(heading("Reczi cypher bloqueada"))
+        if (hasPin) {
+            val pin = field("PIN", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+            val msg = label("")
+            col.addView(pin)
+            col.addView(msg)
+            col.addView(guard(primaryButton("Entrar") { tryPin(pin, msg) }))
+        }
+        if (bio) col.addView(button("Impressão digital / bloqueio do telemóvel") { systemUnlock() })
+        content.addView(scroll(col))
+        if (bio) systemUnlock()
+    }
+
+    private fun tryPin(pin: EditText, msg: TextView) {
+        val wait = (prefs.getLong(PREF_PIN_UNTIL, 0) - System.currentTimeMillis()).coerceAtMost(MAX_PIN_WAIT_MS)
+        if (wait > 0) {
+            pin.setText("")
+            msg.text = "Demasiadas tentativas. Espera ${wait / 1000 + 1} s."
+            return
+        }
+        val chars = pin.takeChars()
+        if (chars.isEmpty()) return
+        work("A abrir…", { try { vault.checkPin(chars) } finally { chars.fill('\u0000') } }) { r ->
+            when (r) {
+                PinResult.Ok -> {
+                    prefs.edit().remove(PREF_PIN_FAILS).remove(PREF_PIN_UNTIL).apply()
+                    unlocked()
+                }
+                PinResult.Panic -> panic()
+                PinResult.Wrong -> {
+                    // A partir da 5.ª tentativa errada, cada erro obriga a esperar o dobro (30 s, 1 min, ... até 1 h).
+                    val fails = prefs.getInt(PREF_PIN_FAILS, 0) + 1
+                    val edit = prefs.edit().putInt(PREF_PIN_FAILS, fails)
+                    if (fails >= 5) {
+                        edit.putLong(PREF_PIN_UNTIL, System.currentTimeMillis() + (30_000L shl (fails - 5).coerceAtMost(7)).coerceAtMost(MAX_PIN_WAIT_MS))
+                    }
+                    edit.apply()
+                    msg.text = "PIN errado."
+                    msg.setTextColor(red)
+                }
+            }
+        }
+    }
+
+    /**
+     * PIN de pânico: apaga tudo (chaves, contactos, notas, códigos, PINs e a chave do Keystore) e
+     * abre a app vazia, como se fosse nova. O rótulo do progresso é o mesmo de uma abertura normal.
+     */
+    private fun panic() {
+        work("A abrir…", {
+            runCatching { vault.wipe() }
+            store.wipe()
+            vault.clearCache()
+            clearClipboard()
+            prefs.edit().clear().commit()
+        }) {
+            hasPin = false
+            hasPanic = false
+            everLoaded = false
+            loaded = false
+            snap = Snapshot(emptyList(), emptyList(), emptyList())
+            screens.forEach { it.clearSensitive() }
+            unlocked()
+        }
+    }
+
+    /** Desbloqueia com a impressão digital ou com o PIN/padrão do próprio telemóvel. */
+    private fun systemUnlock() {
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        // Sem bloqueio de ecrã no telemóvel não há com que confirmar. Só o dono o consegue tirar
+        // (o Android pede o PIN atual), por isso deixa-se entrar e avisa-se.
+        if (km == null || !km.isDeviceSecure) {
+            if (hasPin) return alert("Bloqueio", "O telemóvel já não tem bloqueio de ecrã. Usa o PIN da app.")
+            unlocked()
+            return alert("Bloqueio", "O telemóvel já não tem bloqueio de ecrã, por isso a app abriu sem pedir nada. Define um bloqueio nas definições do Android.")
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            BiometricPrompt.Builder(this)
+                .setTitle("Reczi cypher")
+                .setSubtitle("Desbloquear a app")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
+                .build()
+                .authenticate(CancellationSignal(), mainExecutor, object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                        if (locked && !isDestroyed) unlocked()
+                    }
+                })
+        } else {
+            // Android 8 a 10: o ecrã do sistema que confirma o bloqueio do telemóvel.
+            @Suppress("DEPRECATION")
+            val intent = km.createConfirmDeviceCredentialIntent("Reczi cypher", "Desbloquear a app")
+            if (intent == null) unlocked() else startActivityForResult(intent, REQ_UNLOCK)
+        }
+    }
+
+    /** Pede um PIN novo (duas vezes). */
+    private fun askNewPin(title: String, hint: String, onOk: (CharArray) -> Unit) =
+        askPassphrase(title, hint, repeat = true, fieldHint = "PIN (mín. ${Lock.MIN_PIN} algarismos)", numeric = true, onOk = onOk)
+
+    /** Antes de mudar ou tirar o bloqueio, confirma o PIN atual. */
+    private fun withCurrentPin(then: () -> Unit) {
+        if (!hasPin) return then()
+        askPassphrase("PIN atual", "", fieldHint = "PIN", numeric = true) { chars ->
+            work("A verificar…", { try { vault.checkPin(chars) } finally { chars.fill('\u0000') } }) { r ->
+                if (r == PinResult.Ok) then() else alert("PIN", "PIN errado.")
+            }
+        }
+    }
+
+    /** Guarda uma alteração aos PINs e atualiza o que o ecrã mostra. */
+    private fun changePins(task: () -> Unit, done: () -> Unit = {}) {
+        work("A guardar…", { task(); vault.hasPin() to vault.hasPanicPin() }) { (pin, panic) ->
+            hasPin = pin
+            hasPanic = panic
+            screens[current].refresh()
+            done()
         }
     }
 
@@ -207,7 +403,7 @@ class MainActivity : Activity() {
     private fun routeShared(text: String, original: String) {
         when {
             // A mensagem fica como chegou: o cofre tira o disfarce ao desencriptar.
-            "BEGIN PGP MESSAGE" in text -> { show(3); (screens[3] as DecryptScreen).setMessage(original) }
+            "BEGIN PGP MESSAGE" in text || "BEGIN PGP SIGNED MESSAGE" in text -> { show(3); (screens[3] as DecryptScreen).setMessage(original) }
             "BEGIN PGP PUBLIC KEY BLOCK" in text -> { show(1); (screens[1] as ContactsScreen).input.setText(text) }
             "BEGIN PGP PRIVATE KEY BLOCK" in text -> alert("Partilha", "Por segurança, importa chaves privadas a partir de um ficheiro, no separador Chaves.")
             else -> { show(2); (screens[2] as EncryptScreen).draft.setText(text) }
@@ -353,16 +549,20 @@ class MainActivity : Activity() {
 
     /** Pede a palavra-passe; o CharArray entregue a [onOk] tem de ser apagado por quem o usa. */
     private fun askPassphrase(
-        title: String, hint: String, repeat: Boolean = false, fieldHint: String = "Palavra-passe", onOk: (CharArray) -> Unit,
+        title: String, hint: String, repeat: Boolean = false, fieldHint: String = "Palavra-passe", numeric: Boolean = false,
+        onCancel: () -> Unit = {}, onOk: (CharArray) -> Unit,
     ) {
         val box = column(dp(20))
         if (hint.isNotEmpty()) box.addView(TextView(this).apply { text = hint })
-        val p1 = passwordField(fieldHint)
-        val p2 = passwordField("Repete")
+        val type = if (numeric) InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        val p1 = field(fieldHint, type)
+        val p2 = field("Repete", type)
         box.addView(p1)
         if (repeat) box.addView(p2)
         val dialog = AlertDialog.Builder(this).setTitle(title).setView(box)
-            .setPositiveButton("OK", null).setNegativeButton("Cancelar") { _, _ -> p1.setText(""); p2.setText("") }
+            .setPositiveButton("OK", null).setNegativeButton("Cancelar") { _, _ -> p1.setText(""); p2.setText(""); onCancel() }
+            .setOnCancelListener { onCancel() }
             .showSecure()
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             if (repeat && p1.text.toString() != p2.text.toString()) {
@@ -422,26 +622,81 @@ class MainActivity : Activity() {
         )
     }
 
+    /** Segundo passo de encriptar/desencriptar um ficheiro: escolher onde guardar o resultado. */
+    private fun pickOutput(input: Uri, kind: String, name: String) {
+        pendingIn = input.toString()
+        pendingSave = kind
+        val ext = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+        startActivityForResult(
+            Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(mime).putExtra(Intent.EXTRA_TITLE, name),
+            REQ_SAVE_FILE
+        )
+    }
+
+    /** Nome do ficheiro escolhido, como o seletor o mostra. */
+    private fun fileName(uri: Uri): String = runCatching {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: "ficheiro"
+
+    private fun deleteDocument(uri: Uri) {
+        runCatching { DocumentsContract.deleteDocument(contentResolver, uri) }
+    }
+
+    /** Escreve em [out]; se [task] falhar, apaga o ficheiro incompleto antes de mostrar o erro. */
+    private fun <T> writeTo(out: Uri, task: (java.io.OutputStream) -> T): T = try {
+        contentResolver.openOutputStream(out, "wt")!!.use(task)
+    } catch (e: Throwable) {
+        deleteDocument(out)
+        throw e
+    }
+
     @Deprecated("API da framework; não usamos AndroidX")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        // Voltar de um seletor de ficheiros (ou do ecrã de desbloqueio) não conta como tempo fora da app.
+        stoppedAt = 0L
+        if (requestCode == REQ_UNLOCK) {
+            if (resultCode == RESULT_OK && locked) unlocked()
+            return
+        }
         val kind = pendingOpen
         val backupFpr = pendingBackupFpr
+        val input = pendingIn?.let(Uri::parse)
+        val saveKind = pendingSave
         pendingOpen = null
         pendingBackupFpr = null
+        pendingIn = null
+        pendingSave = null
         val uri: Uri = data?.data?.takeIf { resultCode == RESULT_OK } ?: return
         if (uri.scheme != ContentResolver.SCHEME_CONTENT) return alert("Erro", "Local de ficheiro não suportado.")
         when (requestCode) {
-            REQ_OPEN -> work("A ler o ficheiro…", { readUri(uri) }) { bytes ->
-                when (kind) {
-                    KIND_PRIVATE -> (screens[0] as KeysScreen).importPrivate(bytes)
-                    KIND_PUBLIC -> (screens[1] as ContactsScreen).importPublic(bytes)
-                    KIND_MESSAGE -> (screens[3] as DecryptScreen).loadFile(bytes)
+            REQ_OPEN -> when (kind) {
+                KIND_FILE_ENC -> work("…", { fileName(uri) }) { name -> pickOutput(uri, KIND_FILE_ENC, "$name.pgp") }
+                KIND_FILE_DEC -> work("A ver o ficheiro…", {
+                    contentResolver.openInputStream(uri)!!.use { vault.isFileForMe(it) } to fileName(uri)
+                }) { (forMe, name) ->
+                    if (!forMe) return@work alert("Desencriptar", "Este ficheiro não foi encriptado para nenhuma das tuas chaves.")
+                    val plain = Regex("\\.(pgp|gpg|asc)$", RegexOption.IGNORE_CASE).replace(name, "")
+                    pickOutput(uri, KIND_FILE_DEC, if (plain != name && plain.isNotEmpty()) plain else "$name.aberto")
+                }
+                KIND_QR_PUBLIC, KIND_QR_PRIVATE -> work("A ler o código QR…", { readQrImage(uri) }) { text ->
+                    if (text == null) alert("QR", "Não encontrei nenhum código QR nesta imagem. Tenta uma fotografia mais nítida e de frente.")
+                    else handleQr(kind, text)
+                }
+                else -> work("A ler o ficheiro…", { readUri(uri) }) { bytes ->
+                    when (kind) {
+                        KIND_PRIVATE -> (screens[0] as KeysScreen).importPrivate(bytes)
+                        KIND_PUBLIC -> (screens[1] as ContactsScreen).importPublic(bytes)
+                        KIND_MESSAGE -> (screens[3] as DecryptScreen).loadFile(bytes)
+                    }
                 }
             }
             REQ_SAVE -> {
                 if (backupFpr == null) {
-                    work("…", { runCatching { DocumentsContract.deleteDocument(contentResolver, uri) } }) {
+                    work("…", { deleteDocument(uri) }) {
                         alert("Backup", "A cópia NÃO foi guardada. Repete o backup.")
                     }
                     return
@@ -453,6 +708,96 @@ class MainActivity : Activity() {
                     if (!readUri(uri).contentEquals(bytes)) throw PgpError("A cópia ficou incompleta. Repete o backup.")
                 }) { alert("Backup", "Cópia da chave privada guardada. Guarda-a num local seguro e offline.") }
             }
+            REQ_SAVE_FILE -> when {
+                input == null -> work("…", { deleteDocument(uri) }) { alert("Ficheiro", "Não ficou nada guardado. Repete a operação.") }
+                saveKind == KIND_FILE_ENC -> (screens[2] as EncryptScreen).runFileJob(input, uri)
+                else -> (screens[3] as DecryptScreen).decryptFile(input, uri)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ códigos QR
+
+    /** Mostra uma chave como código QR. */
+    private fun showQr(title: String, key: org.bouncycastle.openpgp.PGPKeyRing, note: String) {
+        val side = minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels) - dp(96)
+        work("A desenhar o QR…", { QrScanner.render(Qr.ofKey(key).second, side) }) { bmp ->
+            val box = column(dp(20))
+            box.setBackgroundColor(Color.WHITE)
+            box.addView(ImageView(this).apply {
+                setImageBitmap(bmp)
+                // Sem suavizar: os quadrados têm de ficar nítidos para a câmara os ler.
+                (drawable as? android.graphics.drawable.BitmapDrawable)?.setFilterBitmap(false)
+                adjustViewBounds = true
+            }, LinearLayout.LayoutParams(side, side))
+            box.addView(TextView(this).apply { this.text = note; setTextColor(Color.BLACK); setPadding(0, dp(12), 0, 0) })
+            AlertDialog.Builder(this).setTitle(title).setView(scroll(box)).setPositiveButton("Fechar", null).showSecure()
+        }
+    }
+
+    /** Lê um QR com a câmara (pedindo a permissão na primeira vez) ou, em alternativa, de uma fotografia. */
+    private fun scanQr(kind: String) {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            pendingScan = kind
+            return requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+        }
+        QrScanner(
+            this,
+            if (kind == KIND_QR_PRIVATE) "Ler o backup em papel" else "Ler a chave de um contacto",
+            accept = { Disguise.isDisguised(it) },
+            onPhoto = { openFile(kind) },
+            onResult = { handleQr(kind, it) },
+        ).show()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_CAMERA) return
+        val kind = pendingScan ?: return
+        pendingScan = null
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) return scanQr(kind)
+        confirm(
+            "Câmara", "Sem acesso à câmara não consigo ler o código diretamente. Podes tirar uma fotografia ao código " +
+                "com a app da câmara e escolhê-la aqui.", "Escolher fotografia",
+        ) { openFile(kind) }
+    }
+
+    /** Lê um QR de uma imagem escolhida, reduzindo-a primeiro se for muito grande. */
+    private fun readQrImage(uri: Uri): String? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 3200) sample *= 2
+        val bmp = contentResolver.openInputStream(uri)!!.use {
+            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+        } ?: throw PgpError("Não consigo abrir esta imagem.")
+        return try { QrScanner.decodeBitmap(bmp) } finally { bmp.recycle() }
+    }
+
+    private fun handleQr(kind: String?, text: String) {
+        val bytes = Disguise.reveal(text) ?: return alert("QR", "Este código QR não é do Reczi cypher.")
+        if (kind == KIND_QR_PRIVATE) {
+            show(0)
+            (screens[0] as KeysScreen).importPrivate(bytes)
+        } else {
+            show(1)
+            (screens[1] as ContactsScreen).importPublic(bytes)
+        }
+    }
+
+    /** Texto e cor para mostrar o estado da assinatura de uma mensagem, texto assinado ou ficheiro. */
+    private fun signatureText(r: DecryptResult): Pair<String, Int> {
+        val who = r.signerName ?: "chave desconhecida"
+        return when (val s = r.signature) {
+            SignatureStatus.Invalid ->
+                "⚠ ASSINATURA INVÁLIDA - o conteúdo foi alterado ou é falso!" to red
+            is SignatureStatus.Valid ->
+                if (r.signerVerified) "✔ VERIFICADA - assinada por $who." to green
+                else "NÃO VERIFICADA - assinada por $who, mas ainda não confirmaste esta chave (${s.fingerprint.takeLast(16)})." to orange
+            is SignatureStatus.Rejected ->
+                "⚠ ASSINATURA RECUSADA - assinada por $who, mas essa chave foi revogada, expirou ou usa algoritmos fracos. Não confies no remetente." to red
+            SignatureStatus.UnknownSigner -> "REMETENTE DESCONHECIDO - assinada por uma chave que não tens." to orange
+            SignatureStatus.None -> "SEM ASSINATURA - não é possível confirmar quem a enviou." to orange
         }
     }
 
@@ -655,6 +1000,7 @@ class MainActivity : Activity() {
         private val pass2 = passwordField("Repete a palavra-passe")
         private val problems = column(0)
         private val list = column(0)
+        private val lockBox = column(0)
         private val col = column()
         override val view: View = scroll(col)
 
@@ -674,7 +1020,73 @@ class MainActivity : Activity() {
                     val text = pasteText()
                     importPrivate(text.toByteArray(), fromClipboard = true)
                 },
+                button("Ler QR") { scanQr(KIND_QR_PRIVATE) },
             ))
+            col.addView(heading("Bloqueio da app"))
+            col.addView(lockBox)
+        }
+
+        private fun refreshLock() {
+            lockBox.removeAllViews()
+            lockBox.addView(label(
+                "O bloqueio trava quem pegar no telemóvel desbloqueado: pede-se ao abrir a app e depois de 1 minuto fora dela. " +
+                    "A palavra-passe da chave continua a ser pedida para assinar e desencriptar."
+            ))
+            lockBox.addView(CheckBox(this@MainActivity).apply {
+                text = "Desbloquear com a impressão digital (ou o bloqueio do telemóvel)"
+                isChecked = prefs.getBoolean(PREF_LOCK_BIO, false)
+                setOnClickListener {
+                    val on = isChecked
+                    val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+                    if (on && km?.isDeviceSecure != true) {
+                        isChecked = false
+                        alert("Bloqueio", "O telemóvel não tem bloqueio de ecrã. Define primeiro um PIN, padrão ou impressão digital nas definições do Android.")
+                    } else if (!on && hasPin) {
+                        // Desligar a alternativa não precisa de confirmação: o PIN da app continua a proteger.
+                        prefs.edit().putBoolean(PREF_LOCK_BIO, false).apply()
+                    } else {
+                        prefs.edit().putBoolean(PREF_LOCK_BIO, on).apply()
+                    }
+                }
+            })
+            if (!hasPin) {
+                lockBox.addView(button("Definir um PIN da app…") {
+                    askNewPin(
+                        "PIN da app",
+                        "Um PIN só desta app. Se te esqueceres dele e não tiveres a impressão digital ligada acima, a única saída é " +
+                            "reinstalar a app, e perdes o que não tiver backup.",
+                    ) { chars -> changePins({ try { vault.setPin(chars) } finally { chars.fill('\u0000') } }) }
+                })
+                return
+            }
+            lockBox.addView(label("✔ PIN da app definido."))
+            lockBox.addView(buttonRow(
+                button("Mudar PIN…") {
+                    withCurrentPin {
+                        askNewPin("PIN novo", "") { chars -> changePins({ try { vault.setPin(chars) } finally { chars.fill('\u0000') } }) }
+                    }
+                },
+                button("Tirar PIN") {
+                    withCurrentPin { changePins({ vault.clearPin() }) }
+                },
+            ))
+            lockBox.addView(label(
+                (if (hasPanic) "✔ PIN de pânico definido. " else "") +
+                    "PIN de pânico: se o escreveres no ecrã de bloqueio, a app APAGA TUDO (chaves, contactos, notas e códigos) e abre vazia, " +
+                    "como se fosse nova. Não há volta: só recuperas o que tiveres em backup."
+            ))
+            lockBox.addView(buttonRow(*listOfNotNull(
+                button(if (hasPanic) "Mudar PIN de pânico…" else "Definir PIN de pânico…") {
+                    withCurrentPin {
+                        askNewPin("PIN de pânico", "Tem de ser diferente do PIN da app. Escolhe um que não escrevas por engano.") { chars ->
+                            changePins({ try { vault.setPanicPin(chars) } finally { chars.fill('\u0000') } }) {
+                                alert("PIN de pânico", "Guardado. Confirma que tens backup da chave privada fora do telemóvel.")
+                            }
+                        }
+                    }
+                },
+                if (hasPanic) button("Tirar PIN de pânico") { withCurrentPin { changePins({ vault.clearPanicPin() }) } } else null,
+            ).toTypedArray()))
         }
 
         override fun refresh() {
@@ -683,6 +1095,7 @@ class MainActivity : Activity() {
             list.removeAllViews()
             if (snap.myKeys.isEmpty()) list.addView(label("Ainda não tens nenhuma chave."))
             snap.myKeys.forEach { list.addView(keyCard(it)) }
+            refreshLock()
         }
 
         private fun brokenCard(broken: List<BrokenEntry>): View {
@@ -724,8 +1137,18 @@ class MainActivity : Activity() {
                 button("Copiar pública") { pickFormat(pub) { copy(it, sensitive = false) } },
             ))
             c.addView(buttonRow(
-                button("Backup da privada…") { backup(info.fingerprint) },
+                button("Mostrar QR") {
+                    showQr(
+                        "A tua chave pública", Pgp.certificateOf(k.ring),
+                        "${info.userId}\n${Pgp.prettyFingerprint(info.fingerprint)}\n\nO teu contacto lê este código em Contactos > Ler QR. " +
+                            "Depois confirmem os dois que a impressão digital acima é a mesma que aparece no telemóvel dele.",
+                    )
+                },
                 button("Prolongar validade") { extend(k.ring) },
+            ))
+            c.addView(buttonRow(
+                button("Backup da privada…") { backup(info.fingerprint) },
+                button("Backup em papel…") { paperBackup(info) },
             ))
             c.addView(button("Apagar esta chave…") { delete(info) })
             return c
@@ -798,6 +1221,23 @@ class MainActivity : Activity() {
             ) { saveBackup(fingerprint) }
         }
 
+        private fun paperBackup(info: KeyInfo) {
+            confirm(
+                "Backup em papel",
+                "Vais imprimir a chave privada como código QR (e em texto). Continua protegida pela tua palavra-passe, " +
+                    "mas imprime só numa impressora tua e NÃO escolhas \"Guardar como PDF\" para a cloud. Guarda o papel num local seguro.",
+                "Continuar",
+            ) {
+                work("A preparar…", {
+                    val ring = vault.backupRing(info.fingerprint)
+                    Qr.ofKey(ring).second to Pgp.armor(ring)
+                }) { (qr, armored) ->
+                    val date = DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.forLanguageTag("pt-PT")).format(Date())
+                    PaperBackup(this@MainActivity, info.userId, info.fingerprint, date, qr, armored).print(this@MainActivity)
+                }
+            }
+        }
+
         private fun extend(key: PGPSecretKeyRing) {
             askPassphrase("Prolongar validade", "A chave fica válida por mais 2 anos a partir de hoje.") { chars ->
                 change("A atualizar…", {
@@ -832,6 +1272,7 @@ class MainActivity : Activity() {
                 button("De ficheiro…") { openFile(KIND_PUBLIC) },
                 guard(primaryButton("Importar") { importPublic(input.text.toString().toByteArray()) }),
             ))
+            col.addView(button("Ler QR do telemóvel do contacto") { scanQr(KIND_QR_PUBLIC) })
             col.addView(heading("Destinatários"))
             col.addView(list)
         }
@@ -912,7 +1353,10 @@ class MainActivity : Activity() {
         private var codeFpr: String? = null
         private val useCode = CheckBox(this@MainActivity).apply { isChecked = prefs.getBoolean(PREF_USE_CODE, true) }
         private val output = textArea("", 5, mono = true).apply { keyListener = null; setTextIsSelectable(true) }
+        private val outTitle = heading("Mensagem encriptada")
         private val outBox = column(0)
+        /** Encriptar um ficheiro: o que estava escolhido quando se carregou no botão. */
+        private var fileJob: Triple<List<String>, String, Boolean>? = null
         private val col = column()
         override val view: View = scroll(col)
 
@@ -944,8 +1388,12 @@ class MainActivity : Activity() {
             col.addView(formatHint)
             useCode.setOnClickListener { prefs.edit().putBoolean(PREF_USE_CODE, useCode.isChecked).apply() }
             col.addView(useCode)
-            col.addView(primaryButton("Encriptar") { encrypt() })
-            outBox.addView(heading("Mensagem encriptada"))
+            col.addView(buttonRow(
+                primaryButton("Encriptar") { encrypt() },
+                button("Só assinar") { signOnly() },
+            ))
+            col.addView(button("Encriptar um ficheiro ou fotografia…") { pickFile() })
+            outBox.addView(outTitle)
             outBox.addView(output)
             outBox.addView(buttonRow(
                 button("Copiar") { copy(output.text.toString(), sensitive = false) },
@@ -1039,13 +1487,79 @@ class MainActivity : Activity() {
             val run = { chars: CharArray? ->
                 work("A encriptar…", {
                     try { formatted(vault.encrypt(text, to, me!!, chars != null, chars), fmt, code) } finally { chars?.fill('\u0000') }
-                }) {
-                    output.setText(it)
-                    outBox.visibility = View.VISIBLE
-                    output.post { (view as ScrollView).smoothScrollTo(0, outBox.top) }
-                }
+                }) { showOutput("Mensagem encriptada", it) }
             }
             if (sign.isChecked) askPassphrase("Assinar", "Palavra-passe da tua chave:") { run(it) } else run(null)
+        }
+
+        private fun showOutput(title: String, text: String) {
+            outTitle.text = title
+            output.setText(text)
+            outBox.visibility = View.VISIBLE
+            output.post { (view as ScrollView).smoothScrollTo(0, outBox.top) }
+        }
+
+        private fun myKey(): String? {
+            val me = myFprs.getOrNull(myKeySpinner.selectedItemPosition.coerceAtLeast(0))
+            when {
+                me != null -> {}
+                snap.myKeys.isNotEmpty() -> alert("Chave", "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves.")
+                else -> alert("Chave", "Cria primeiro a tua chave no separador Chaves.")
+            }
+            return me
+        }
+
+        /** Assina o texto sem o encriptar: fica legível por toda a gente, com a tua assinatura. */
+        private fun signOnly() {
+            val text = draft.text.toString()
+            if (text.isBlank()) return alert("Assinar", "Escreve primeiro o texto.")
+            val me = myKey() ?: return
+            askPassphrase(
+                "Só assinar",
+                "O texto NÃO fica encriptado: qualquer pessoa o consegue ler. A assinatura só prova que é teu.\n\nPalavra-passe da tua chave:",
+            ) { chars ->
+                work("A assinar…", { try { vault.sign(text, me, chars) } finally { chars.fill('\u0000') } }) {
+                    showOutput("Texto assinado (não está encriptado)", it)
+                }
+            }
+        }
+
+        /** Encriptar um ficheiro: usa os destinatários, a chave e a opção "Assinar" deste ecrã. */
+        private fun pickFile() {
+            val to = boxes.filter { it.first.isChecked }.map { it.second }
+            val me = myKey() ?: return
+            if (to.isEmpty()) return alert("Encriptar ficheiro", "Escolhe primeiro, em \"Para\", pelo menos um destinatário (podes escolher-te a ti).")
+            fileJob = Triple(to, me, sign.isChecked)
+            openFile(KIND_FILE_ENC)
+        }
+
+        fun runFileJob(input: Uri, out: Uri) {
+            val job = fileJob
+            fileJob = null
+            if (job == null) return work("…", { deleteDocument(out) }) { alert("Ficheiro", "Não ficou nada guardado. Repete a operação.") }
+            val (to, me, signed) = job
+            val run = { chars: CharArray? ->
+                work("A encriptar o ficheiro…", {
+                    try {
+                        val name = fileName(input)
+                        writeTo(out) { o -> contentResolver.openInputStream(input)!!.use { i -> vault.encryptFile(i, o, name, to, me, signed, chars) } }
+                    } finally {
+                        chars?.fill('\u0000')
+                    }
+                }) {
+                    alert(
+                        "Ficheiro encriptado",
+                        "Ficou guardado onde escolheste (.pgp). Abre em qualquer programa OpenPGP e no Reczi cypher " +
+                            "(Desencriptar > Desencriptar um ficheiro). O ficheiro original não foi apagado."
+                    )
+                }
+            }
+            if (signed) {
+                // Se desistires aqui, o ficheiro de destino (ainda vazio) é apagado.
+                askPassphrase("Assinar o ficheiro", "Palavra-passe da tua chave:", onCancel = { work("…", { deleteDocument(out) }) {} }) { run(it) }
+            } else {
+                run(null)
+            }
         }
     }
 
@@ -1073,6 +1587,8 @@ class MainActivity : Activity() {
                 button("De ficheiro…") { openFile(KIND_MESSAGE) },
                 primaryButton("Desencriptar") { decrypt() },
             ))
+            col.addView(label("Um texto só assinado (sem encriptar) também se verifica aqui."))
+            col.addView(button("Desencriptar um ficheiro ou fotografia…") { openFile(KIND_FILE_DEC) })
             outBox.addView(heading("Mensagem original"))
             outBox.addView(status)
             outBox.addView(output)
@@ -1122,6 +1638,7 @@ class MainActivity : Activity() {
             val msg = fileMessage ?: input.text.toString().trim()
             if (msg.isEmpty()) return
             clearSensitive()
+            if (Pgp.isSignedText(msg)) return work("A verificar a assinatura…", { vault.verify(msg) }) { showResult(it, signedOnly = true) }
             work("A verificar…", { vault.isForMe(msg) }) { forMe ->
                 if (!forMe) return@work alert("Desencriptar", "Esta mensagem não foi encriptada para nenhuma das tuas chaves.")
                 askPassphrase("Desencriptar", "Palavra-passe da tua chave:") { chars ->
@@ -1132,20 +1649,30 @@ class MainActivity : Activity() {
             }
         }
 
-        private fun showResult(r: DecryptResult) {
-            val who = r.signerName ?: "chave desconhecida"
-            val (text, color) = when (val s = r.signature) {
-                SignatureStatus.Invalid ->
-                    "⚠ ASSINATURA INVÁLIDA - a mensagem foi alterada ou é falsa!" to red
-                is SignatureStatus.Valid ->
-                    if (r.signerVerified) "✔ VERIFICADA - assinada por $who." to green
-                    else "NÃO VERIFICADA - assinada por $who, mas ainda não confirmaste esta chave (${s.fingerprint.takeLast(16)})." to orange
-                is SignatureStatus.Rejected ->
-                    "⚠ ASSINATURA RECUSADA - assinada por $who, mas essa chave foi revogada, expirou ou usa algoritmos fracos. Não confies no remetente." to red
-                SignatureStatus.UnknownSigner -> "REMETENTE DESCONHECIDO - assinada por uma chave que não tens." to orange
-                SignatureStatus.None -> "SEM ASSINATURA - não é possível confirmar quem a enviou." to orange
+        /** Desencripta um ficheiro já escolhido para o destino já escolhido. */
+        fun decryptFile(input: Uri, out: Uri) {
+            askPassphrase("Desencriptar ficheiro", "Palavra-passe da tua chave:", onCancel = { work("…", { deleteDocument(out) }) {} }) { chars ->
+                work("A desencriptar o ficheiro…", {
+                    try {
+                        // Se falhar (ficheiro alterado, palavra-passe errada...), o que já foi escrito é apagado.
+                        writeTo(out) { o -> vault.decryptFile({ contentResolver.openInputStream(input)!! }, o, chars) }
+                    } finally {
+                        chars.fill('\u0000')
+                    }
+                }) { r ->
+                    val original = if (r.text.isEmpty()) "" else "\n\nNome original: ${r.text}"
+                    alert("Ficheiro desencriptado", "Ficou guardado onde escolheste.$original\n\n${signatureText(r).first}")
+                }
             }
-            status.text = if (r.secretCodeWith == null) text else "$text\n🔒 Veio fechada com o código secreto combinado com ${r.secretCodeWith}."
+        }
+
+        private fun showResult(r: DecryptResult, signedOnly: Boolean = false) {
+            val (text, color) = signatureText(r)
+            status.text = when {
+                signedOnly -> "$text\nEste texto não estava encriptado, só assinado."
+                r.secretCodeWith == null -> text
+                else -> "$text\n🔒 Veio fechada com o código secreto combinado com ${r.secretCodeWith}."
+            }
             status.setTextColor(color)
             // Responder: só a quem assinou com uma chave que já verificaste e que ainda serve para encriptar.
             val signer = (r.signature as? SignatureStatus.Valid)?.fingerprint?.takeIf { r.signerVerified }
@@ -1162,9 +1689,104 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Bloco de notas: cada nota fica encriptada para as tuas chaves; ler pede a palavra-passe. */
+    private inner class NotesScreen : Screen("Notas") {
+        private val list = column(0)
+        private val editorTitle = heading("Nota nova")
+        private val noteTitle = field("Título (fica visível na lista, sem palavra-passe)")
+        private val body = textArea("Texto da nota", 6)
+        private var editing: String? = null
+        private val col = column()
+        override val view: View = scroll(col)
+
+        init {
+            col.addView(heading("Notas"))
+            col.addView(label(
+                "O texto de cada nota é encriptado para a tua chave: guardar não pede nada, ler pede a palavra-passe. " +
+                    "O título serve só para a reconheceres e NÃO fica protegido pela palavra-passe: não ponhas lá segredos."
+            ))
+            col.addView(list)
+            col.addView(editorTitle)
+            col.addView(noteTitle)
+            col.addView(body)
+            col.addView(buttonRow(
+                primaryButton("Guardar") { save() },
+                button("Limpar") { clearSensitive() },
+            ))
+        }
+
+        override fun refresh() {
+            list.removeAllViews()
+            if (snap.notes.isEmpty()) list.addView(label("Ainda não tens notas."))
+            val fmt = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT, Locale.forLanguageTag("pt-PT"))
+            snap.notes.forEach { n -> list.addView(noteCard(n, fmt.format(n.saved))) }
+        }
+
+        private fun noteCard(n: Note, date: String): View {
+            val c = card()
+            c.addView(nameView(n.label))
+            c.addView(TextView(this@MainActivity).apply { text = date; textSize = 12f })
+            c.addView(buttonRow(
+                button("Abrir") { open(n) },
+                button("Apagar") {
+                    confirm("Apagar nota", "Apagar a nota \"${n.label}\"? Não há volta.", "Apagar") {
+                        if (editing == n.id) clearSensitive()
+                        change("A apagar…", { vault.deleteNote(n.id) })
+                    }
+                },
+            ))
+            return c
+        }
+
+        private fun open(n: Note) {
+            askPassphrase("Abrir nota", "Palavra-passe da tua chave:") { chars ->
+                work("A abrir…", { try { vault.readNote(n.id, chars) } finally { chars.fill('\u0000') } }) { text ->
+                    editing = n.id
+                    editorTitle.text = "A editar: ${n.label}"
+                    noteTitle.setText(n.label)
+                    body.setText(text)
+                    body.post { (view as ScrollView).smoothScrollTo(0, editorTitle.top) }
+                }
+            }
+        }
+
+        private fun save() {
+            val label = noteTitle.text.toString()
+            val text = body.text.toString()
+            if (text.isBlank()) return alert("Notas", "Escreve primeiro a nota.")
+            val id = editing
+            change("A guardar…", { vault.saveNote(id, label, text) }) {
+                clearSensitive()
+                Toast.makeText(this@MainActivity, "Nota guardada.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        override fun clearSensitive() {
+            editing = null
+            editorTitle.text = "Nota nova"
+            noteTitle.setText("")
+            body.setText("")
+        }
+    }
+
     private companion object {
         const val REQ_OPEN = 1
         const val REQ_SAVE = 2
+        const val REQ_SAVE_FILE = 3
+        const val REQ_UNLOCK = 4
+        const val REQ_CAMERA = 5
+        const val STATE_IN = "pendingIn"
+        const val STATE_SAVE = "pendingSave"
+        const val STATE_SCAN = "pendingScan"
+        const val KIND_FILE_ENC = "fileEnc"
+        const val KIND_FILE_DEC = "fileDec"
+        const val KIND_QR_PUBLIC = "qrPublic"
+        const val KIND_QR_PRIVATE = "qrPrivate"
+        const val PREF_LOCK_BIO = "lockBio"
+        const val PREF_PIN_FAILS = "pinFails"
+        const val PREF_PIN_UNTIL = "pinUntil"
+        const val LOCK_AFTER_MS = 60_000L
+        const val MAX_PIN_WAIT_MS = 3600_000L
         const val MAX_FILE = 1 shl 20
         const val STATE_OPEN = "pendingOpen"
         const val STATE_BACKUP = "pendingBackup"
