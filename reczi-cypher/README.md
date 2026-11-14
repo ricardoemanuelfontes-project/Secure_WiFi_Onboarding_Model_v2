@@ -41,6 +41,15 @@ Separadores: **Mensagens** (Ler e Escrever, que são o Desencriptar e o Encripta
 - **Impressão digital em palavras**: ao verificar um contacto (e em "Mostrar QR"), a impressão
   digital aparece também como 20 palavras portuguesas, mais fáceis de ler em voz alta.
 
+## Backup completo
+
+No separador ⚙, "Guardar backup…" cria um só ficheiro (`.rczbak`) com as chaves privadas, os
+contactos e as verificações, os códigos secretos e as notas; "Restaurar…" junta-o ao cofre de
+outro telemóvel, sem apagar nem substituir o que lá estiver. Os PINs da app não vão.
+
+O ficheiro é cifrado com AES-256-GCM, com a chave derivada da palavra-passe do backup por scrypt.
+As chaves privadas lá dentro continuam protegidas pela sua própria palavra-passe.
+
 ## Ajuda dentro da app
 
 - **Bem-vindo**: na primeira abertura sem chaves, uma explicação curta de como funciona.

@@ -272,6 +272,65 @@ class PhasesTest {
         assertEquals(ruiFpr, Pgp.fingerprint(Pgp.parseCertificates(small.result!!).single()))
     }
 
+    @Test
+    fun fullBackupMovesEverythingToANewPhone() {
+        val (a, r) = pair()
+        val (ana, anaFpr) = a
+        val (rui, ruiFpr) = r
+        val eva = Pgp.generate("Eva", "eva@exemplo.pt", pass)
+        ana.importContacts(listOf(Pgp.certificateOf(eva))) // fica por verificar
+        ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray())
+        rui.setCode(anaFpr, "o gato comeu a sardinha".toCharArray())
+        val noteId = ana.saveNote(null, "Códigos", "PIN 1234")
+        ana.setPin("2468".toCharArray())
+        val backupPass = "outra frase só para o backup".toCharArray()
+        val file = ana.exportBackup(backupPass)
+
+        assertTrue(Backup.isBackup(file))
+        val raw = String(file, Charsets.ISO_8859_1)
+        assertFalse(raw.contains("exemplo.pt") || raw.contains("PGP") || raw.contains("Códigos"), "nada legível no ficheiro")
+        assertFailsWith<PgpError> { ana.exportBackup("curta".toCharArray()) }
+        assertFailsWith<PgpError> { Vault(MemoryStore()).exportBackup(backupPass) }
+
+        // Telemóvel novo: cofre vazio.
+        val store = MemoryStore()
+        val novo = Vault(store)
+        assertFailsWith<PgpError> { novo.importBackup(file, "palavra-passe errada".toCharArray()) }
+        val damaged = file.copyOf().also { it[it.size - 5] = (it[it.size - 5] + 1).toByte() }
+        assertFailsWith<PgpError> { novo.importBackup(damaged, backupPass) }
+        assertFailsWith<PgpError> { novo.importBackup("isto não é um backup".toByteArray(), backupPass) }
+        assertTrue(store.names().isEmpty(), "um backup recusado não deixa nada no cofre")
+
+        assertEquals(RestoreResult(keys = 1, contacts = 2, notes = 1, codes = 1), novo.importBackup(file, backupPass))
+        val s = novo.snapshot()
+        assertEquals(anaFpr, s.myKeys.single().info.fingerprint)
+        assertEquals(mapOf(ruiFpr to true, Pgp.fingerprint(eva) to false), s.contacts.associate { it.info.fingerprint to it.verified })
+        assertEquals("PIN 1234", novo.readNote(noteId, pass))
+        assertFalse(novo.hasPin(), "os PINs da app não vão no backup")
+        // Tudo funciona como antes: mensagem com código secreto do Rui abre no telemóvel novo, e responde-se.
+        val hidden = rui.disguise(rui.encrypt("olá no telemóvel novo", listOf(anaFpr), ruiFpr, true, pass), true, anaFpr)
+        val d = novo.decrypt(hidden, pass)
+        assertEquals("olá no telemóvel novo", d.text)
+        assertTrue(d.signerVerified)
+        assertEquals("Rui <rui@exemplo.pt>", d.secretCodeWith)
+        assertEquals("resposta", rui.decrypt(novo.encrypt("resposta", listOf(ruiFpr), anaFpr, true, pass), pass).text)
+
+        // Restaurar por cima não duplica nem estraga o que já lá está.
+        novo.saveNote(noteId, "Códigos", "texto mais recente")
+        assertEquals(RestoreResult(0, 0, 0, 0), novo.importBackup(file, backupPass))
+        assertEquals("texto mais recente", novo.readNote(noteId, pass))
+
+        // Entradas com nomes ou conteúdos inventados não entram.
+        val forged = Backup.seal(
+            mapOf("pin" to ByteArray(48), "sec-" + "0".repeat(40) to "lixo".toByteArray(), "pub-$anaFpr" to rui.myKey(ruiFpr).let { Pgp.certificateOf(it).encoded },
+                "code-" + "1".repeat(40) to ByteArray(32), "note-xyz" to "1\nx\ny".toByteArray(), "verified" to "0".repeat(40).toByteArray()),
+            backupPass,
+        )
+        val alvo = MemoryStore()
+        assertEquals(RestoreResult(0, 0, 0, 0), Vault(alvo).importBackup(forged, backupPass))
+        assertTrue(alvo.names().none { it != "verified" })
+    }
+
     /** Desenha os módulos como uma imagem, [scale] píxeis por módulo. */
     private fun render(m: Array<BooleanArray>, scale: Int): Triple<IntArray, Int, Int> {
         val w = m[0].size * scale

@@ -61,6 +61,9 @@ data class Note(val id: String, val saved: java.util.Date, val label: String)
 
 enum class PinResult { Ok, Panic, Wrong }
 
+/** O que um backup completo acrescentou ao cofre (o que já existia não conta). */
+data class RestoreResult(val keys: Int, val contacts: Int, val notes: Int, val codes: Int)
+
 /**
  * As tuas chaves privadas e as chaves públicas dos destinatários. Só deixa encriptar
  * para destinatários cuja impressão digital confirmaste ([setVerified]).
@@ -328,6 +331,60 @@ class Vault(private val store: Store) {
         store.names().forEach { store.delete(it) }
     }
 
+    // ------------------------------------------------------------------ backup completo
+
+    /**
+     * Tudo o que está no cofre num só ficheiro cifrado com [passphrase] (ver [Backup]): chaves
+     * privadas, contactos e verificações, códigos secretos e notas. Os PINs da app não vão: o
+     * bloqueio é de cada telemóvel.
+     */
+    fun exportBackup(passphrase: CharArray): ByteArray {
+        val entries = synchronized(this) {
+            store.names().filter { name -> KINDS.any { name.startsWith(it) } || name == VERIFIED }
+                .mapNotNull { name -> runCatching { load(name) }.getOrNull()?.let { name to it } }.toMap()
+        }
+        if (entries.keys.none { it.startsWith(SEC) }) throw PgpError("Ainda não tens nenhuma chave para pôr no backup.")
+        return Backup.seal(entries, passphrase)
+    }
+
+    /**
+     * Junta ao cofre o que vem num backup completo. Nada do que já cá está é apagado nem
+     * substituído: chaves, notas e códigos que já existam ficam como estão; os contactos são
+     * atualizados como numa importação normal. Cada entrada é validada antes de entrar.
+     */
+    fun importBackup(data: ByteArray, passphrase: CharArray): RestoreResult {
+        val entries = Backup.open(data, passphrase) // lento (scrypt): fora do bloqueio do cofre
+        synchronized(this) {
+            val hex = Regex("[0-9A-F]{40,64}")
+            var keys = 0
+            var notes = 0
+            var codes = 0
+            for ((name, bytes) in entries.filterKeys { it.startsWith(SEC) }) {
+                val ring = runCatching { PGPainless.readKeyRing().secretKeyRing(bytes) }.getOrNull() ?: continue
+                if (name != SEC + Pgp.fingerprint(ring) || load(name) != null) continue
+                if (runCatching { addMyKey(ring) }.isSuccess) keys++
+            }
+            val certs = entries.filterKeys { it.startsWith(PUB) }.mapNotNull { (name, bytes) ->
+                runCatching { PGPainless.readKeyRing().publicKeyRing(bytes) }.getOrNull()?.takeIf { name == PUB + Pgp.fingerprint(it) }
+            }
+            val imported = if (certs.isEmpty()) ImportResult(emptyList(), 0, emptyList())
+            else runCatching { importContacts(certs) }.getOrDefault(ImportResult(emptyList(), 0, emptyList()))
+            val known = snapshot().contacts.map { it.info.fingerprint }.toSet()
+            // O backup está autenticado pela palavra-passe: as verificações que lá vêm são as tuas.
+            entries[VERIFIED]?.toString(Charsets.UTF_8)?.lines()?.filter { it in known }?.forEach { setVerified(it, true) }
+            for ((name, bytes) in entries.filterKeys { it.startsWith(CODE) }) {
+                val fpr = name.removePrefix(CODE)
+                if (fpr in known && bytes.size == 32 && load(name) == null) { save(name, bytes); codes++ }
+            }
+            for ((name, bytes) in entries.filterKeys { it.startsWith(NOTE) }) {
+                val parts = String(bytes, Charsets.UTF_8).split("\n", limit = 3)
+                val ok = hex.matches(name.removePrefix(NOTE)) && parts.size == 3 && parts[0].toLongOrNull() != null && "BEGIN PGP MESSAGE" in parts[2]
+                if (ok && load(name) == null) { save(name, bytes); notes++ }
+            }
+            return RestoreResult(keys, imported.added.size, notes, codes)
+        }
+    }
+
     // ------------------------------------------------------------------ assinar e ficheiros
 
     /** Assina um texto sem o encriptar (ver [Pgp.sign]). */
@@ -494,6 +551,8 @@ class Vault(private val store: Store) {
         private const val NOTE = "note-"
         private const val PIN = "pin"
         private const val PANIC = "panic"
+        /** O que entra num backup completo (além da lista de verificados). */
+        private val KINDS = listOf(SEC, PUB, CODE, NOTE)
     }
 }
 

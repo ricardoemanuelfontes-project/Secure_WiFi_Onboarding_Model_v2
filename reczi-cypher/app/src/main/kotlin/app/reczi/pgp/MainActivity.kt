@@ -760,6 +760,7 @@ class MainActivity : Activity() {
                         confirm("QR", message, "Escolher outra fotografia") { openFile(kind) }
                     }
                 }
+                KIND_BACKUP_ALL -> work("A ler o ficheiro…", { readUri(uri, MAX_BACKUP) }) { bytes -> restoreAll(bytes) }
                 else -> work("A ler o ficheiro…", { readUri(uri) }) { bytes ->
                     when (kind) {
                         KIND_PRIVATE -> keys.importPrivate(bytes)
@@ -785,10 +786,66 @@ class MainActivity : Activity() {
                     alert("Backup", "Cópia da chave privada guardada. Guarda-a num local seguro e offline.")
                 }
             }
+            REQ_SAVE_ALL -> saveAll(uri)
             REQ_SAVE_FILE -> when {
                 input == null -> work("…", { deleteDocument(uri) }) { alert("Ficheiro", "Não ficou nada guardado. Repete a operação.") }
                 saveKind == KIND_FILE_ENC -> enc.runFileJob(input, uri)
                 else -> dec.decryptFile(input, uri)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ backup completo
+
+    /** Backup completo: pede onde guardar; a palavra-passe é pedida a seguir ([saveAll]). */
+    private fun pickBackupAll() {
+        if (snap.myKeys.isEmpty()) return alert("Backup completo", "Ainda não tens nenhuma chave para guardar.")
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date())
+        startActivityForResult(
+            Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream")
+                .putExtra(Intent.EXTRA_TITLE, "reczi-cypher-backup-$day.rczbak")
+                .putExtra(Intent.EXTRA_LOCAL_ONLY, true), // só armazenamento local (não cloud)
+            REQ_SAVE_ALL
+        )
+    }
+
+    private fun saveAll(out: Uri) {
+        askPassphrase(
+            "Palavra-passe do backup",
+            "Escolhe uma palavra-passe para este ficheiro (mín. ${Pgp.MIN_PASSPHRASE} caracteres). Vais precisar dela para o restaurar; " +
+                "pode ser a mesma da tua chave. Sem ela, o backup não se abre.",
+            repeat = true,
+            onCancel = { work("…", { deleteDocument(out) }) {} },
+        ) { chars ->
+            work("A guardar o backup…", {
+                try {
+                    val bytes = vault.exportBackup(chars)
+                    writeTo(out) { it.write(bytes) }
+                    // Confirma que ficou bem escrito.
+                    if (!readUri(out, MAX_BACKUP).contentEquals(bytes)) { deleteDocument(out); throw PgpError("O backup ficou incompleto. Repete.") }
+                } finally {
+                    chars.fill('\u0000')
+                }
+            }) {
+                snap.myKeys.forEach { markBackedUp(it.info.fingerprint) }
+                alert(
+                    "Backup completo guardado",
+                    "Leva as tuas chaves, os contactos (e quais verificaste), os códigos secretos e as notas. " +
+                        "Não leva os PINs da app. Guarda o ficheiro num local seguro e offline, e faz um novo quando acrescentares contactos ou notas."
+                )
+            }
+        }
+    }
+
+    private fun restoreAll(bytes: ByteArray) {
+        askPassphrase("Restaurar backup completo", "Palavra-passe que deste a este backup:") { chars ->
+            change("A restaurar…", { try { vault.importBackup(bytes, chars) } finally { chars.fill('\u0000') } }) { r ->
+                snap.myKeys.forEach { markBackedUp(it.info.fingerprint) }
+                alert(
+                    "Backup restaurado",
+                    "Acrescentado: ${r.keys} chave(s), ${r.contacts} contacto(s), ${r.codes} código(s) secreto(s) e ${r.notes} nota(s).\n\n" +
+                        "O que já existia neste telemóvel ficou como estava."
+                )
             }
         }
     }
@@ -907,9 +964,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun readUri(uri: Uri): ByteArray = contentResolver.openInputStream(uri)!!.use { input ->
-        val bytes = input.readUpTo(MAX_FILE + 1)
-        if (bytes.size > MAX_FILE) throw PgpError("O ficheiro é demasiado grande.")
+    private fun readUri(uri: Uri, limit: Int = MAX_FILE): ByteArray = contentResolver.openInputStream(uri)!!.use { input ->
+        val bytes = input.readUpTo(limit + 1)
+        if (bytes.size > limit) throw PgpError("O ficheiro é demasiado grande.")
         bytes
     }
 
@@ -1138,7 +1195,7 @@ class MainActivity : Activity() {
             "Aqui estão as TUAS chaves. Cada chave tem duas partes: a pública, que dás aos outros para te escreverem, e a privada, " +
                 "que nunca sai do teu telemóvel e abre o que te enviam.\n\n" +
                 "• Partilhar/Copiar pública e Mostrar QR: para dares a tua chave a alguém.\n" +
-                "• Backup da privada / Backup em papel: uma cópia fora do telemóvel. Sem ela, se perderes o telemóvel ou desinstalares a app, " +
+                "• Backup da privada / Backup em papel: uma cópia da chave fora do telemóvel (o backup completo, com contactos e notas, está no ⚙). Sem ela, se perderes o telemóvel ou desinstalares a app, " +
                 "perdes tudo o que te enviaram.\n" +
                 "• Prolongar validade: a chave vale 2 anos; prolonga-a e volta a enviar a pública aos contactos.\n" +
                 "• Mostrar QR também mostra a impressão digital em palavras, para a confirmares com os teus contactos.\n" +
@@ -1960,11 +2017,22 @@ class MainActivity : Activity() {
                 "• Impressão digital / bloqueio do telemóvel: a forma mais cómoda.\n" +
                 "• PIN da app: um PIN só desta app. Se o esqueceres sem teres a impressão digital ligada, só reinstalando.\n" +
                 "• PIN de pânico: escrito no ecrã de bloqueio, APAGA TUDO e abre a app vazia. Não há volta.\n\n" +
-                "O bloqueio não substitui a palavra-passe da chave, que continua a ser pedida para assinar e desencriptar."
+                "O bloqueio não substitui a palavra-passe da chave, que continua a ser pedida para assinar e desencriptar.\n\n" +
+                "Backup completo: guarda tudo num ficheiro com palavra-passe própria (chaves, contactos, verificações, códigos secretos e notas; " +
+                "os PINs não). No telemóvel novo, instala a app e usa Restaurar. O \"Backup da privada\", em Chaves, guarda só a chave."
 
         init {
             col.addView(heading("Bloqueio da app"))
             col.addView(lockBox)
+            col.addView(heading("Backup completo"))
+            col.addView(label(
+                "Um só ficheiro, protegido por uma palavra-passe, com as tuas chaves, os contactos e verificações, os códigos secretos " +
+                    "e as notas. Serve para mudar de telemóvel sem refazer tudo. Restaurar junta ao que já cá está, sem apagar nada."
+            ))
+            col.addView(buttonRow(
+                button("Guardar backup…") { pickBackupAll() },
+                button("Restaurar…") { openFile(KIND_BACKUP_ALL) },
+            ))
             col.addView(heading("Ajuda"))
             col.addView(button("Como funciona") { alert("Como funciona", HOW_IT_WORKS) })
             col.addView(button("Mostrar de novo os primeiros passos") {
@@ -2152,6 +2220,9 @@ class MainActivity : Activity() {
                 "Para falares com alguém: trocam as chaves públicas, confirmam que são as certas (verificar) e, a partir daí, " +
                 "encriptas com a chave dele e ele com a tua. O texto encriptado pode ir por qualquer app de mensagens.\n\n" +
                 "A app não usa a Internet: és tu que copias ou partilhas o que ela produz."
+        const val REQ_SAVE_ALL = 6
+        const val KIND_BACKUP_ALL = "backupAll"
+        const val MAX_BACKUP = 64 shl 20
         const val REQ_SAVE_FILE = 3
         const val REQ_UNLOCK = 4
         const val REQ_CAMERA = 5
