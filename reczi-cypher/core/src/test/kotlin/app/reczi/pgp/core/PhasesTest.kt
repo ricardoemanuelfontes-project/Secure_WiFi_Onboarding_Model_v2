@@ -206,7 +206,9 @@ class PhasesTest {
         val invite = "Olá! Instala a app.\n1. Faz isto\n\nA minha chave:\n${Pgp.armor(Pgp.certificateOf(a))}\nAté já!\n" +
             "E a do Rui:\n${Pgp.armor(Pgp.certificateOf(b))}"
         val certs = Pgp.parseCertificates(Pgp.extractPublicKeys(invite).toByteArray())
-        assertEquals(listOf(Pgp.fingerprint(a), Pgp.fingerprint(b)), certs.map { Pgp.fingerprint(it) })
+        // As duas chaves saem do meio do texto (a ordem em que a biblioteca as devolve não é fixa).
+        assertEquals(2, certs.size)
+        assertEquals(setOf(Pgp.fingerprint(a), Pgp.fingerprint(b)), certs.map { Pgp.fingerprint(it) }.toSet())
         assertEquals("sem chaves", Pgp.extractPublicKeys("sem chaves"))
 
         val words = Pgp.fingerprintWords(Pgp.fingerprint(a))
