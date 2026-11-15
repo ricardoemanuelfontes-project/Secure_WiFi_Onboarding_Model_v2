@@ -83,6 +83,14 @@ escolher:
 - **PGP normal**: abre em qualquer programa OpenPGP.
 - **Disfarçado: código**: uma linha de letras e números ao acaso, sem cabeçalhos.
 - **Disfarçado: palavras**: uma lista de palavras portuguesas soltas (bem mais comprido).
+- **Disfarçado: poema**: versos em português, em quadras ("Sobre o muro querido morre um luar").
+  Cada palavra de três listas (substantivos, adjetivos, verbos) leva um byte; maiúsculas, acentos,
+  pontuação e quebras de linha não contam ao ler. É o formato mais comprido: cerca de 100 versos
+  para uma mensagem curta assinada, cerca de 50 com o modo compacto.
+
+**Modo compacto** (em Escrever): a mensagem vai sem assinatura e sem cópia para ti, e fica com menos
+de metade do tamanho (175 em vez de 398 bytes numa mensagem curta). Em troca, o destinatário não
+confirma que é tua e tu não a consegues reler.
 
 A chave pública também pode ser partilhada disfarçada. A app reconhece sozinha um texto disfarçado
 ao colar, importar ou receber por partilha.

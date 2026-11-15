@@ -1011,6 +1011,7 @@ class MainActivity : Activity() {
     private fun formatted(armored: String, format: Int, codeFpr: String?): String = when (format) {
         FORMAT_CODE -> vault.disguise(armored, words = false, codeFpr = codeFpr)
         FORMAT_WORDS -> vault.disguise(armored, words = true, codeFpr = codeFpr)
+        FORMAT_POEM -> vault.disguise(armored, Disguise.Style.Poem, codeFpr)
         else -> armored
     }
 
@@ -1563,6 +1564,11 @@ class MainActivity : Activity() {
         private var myFprs = listOf<String>()
         private val ownWarning = label("").apply { visibility = View.GONE }
         private val sign = CheckBox(this@MainActivity).apply { text = "Assinar com a minha chave"; isChecked = true }
+        /** Modo compacto: sem assinatura e sem cópia para ti, para a mensagem (e o poema) ficar mais curta. */
+        private val compact = CheckBox(this@MainActivity).apply {
+            text = "Modo compacto: mensagem com cerca de metade do tamanho, mas sem assinatura e sem a conseguires reler"
+            isChecked = prefs.getBoolean(PREF_COMPACT, false)
+        }
         private val format = Spinner(this@MainActivity)
         private val formatHint = label("")
         /** Contacto cujo código secreto pode fechar a camada de fora (um só destinatário, com código). */
@@ -1580,7 +1586,10 @@ class MainActivity : Activity() {
                 "(mensagens, email...): só os destinatários o conseguem abrir.\n\n" +
                 "• Para: só aparecem contactos verificados. \"Eu\" serve para guardares algo só para ti.\n" +
                 "• Assinar: prova que foste tu a escrever; pede a tua palavra-passe.\n" +
-                "• Formato: \"PGP normal\" abre em qualquer programa mas vê-se que é PGP; os \"Disfarçados\" não parecem PGP e só abrem no Reczi cypher.\n" +
+                "• Formato: \"PGP normal\" abre em qualquer programa mas vê-se que é PGP; os \"Disfarçados\" não parecem PGP e só abrem no Reczi cypher: " +
+                "código (curto, parece um token), palavras (soltas, comprido) ou poema (versos em quadras, o mais comprido e o que menos chama a atenção).\n" +
+                "• Modo compacto: a mensagem fica com cerca de metade do tamanho, o que encurta muito o poema. Em troca não leva a tua assinatura " +
+                "(o destinatário não confirma que é tua) e não fica encriptada para ti (não a consegues reler depois).\n" +
                 "• Código secreto: aparece com um formato disfarçado e um só destinatário com quem combinaste um código.\n" +
                 "• Só assinar: o texto NÃO fica secreto, só leva a tua assinatura.\n" +
                 "• Ficheiros e fotografias: usa os destinatários escolhidos acima e guarda um ficheiro .pgp."
@@ -1594,6 +1603,12 @@ class MainActivity : Activity() {
             col.addView(ownWarning)
             col.addView(myKeySpinner)
             col.addView(sign)
+            sign.isEnabled = !compact.isChecked
+            compact.setOnClickListener {
+                prefs.edit().putBoolean(PREF_COMPACT, compact.isChecked).apply()
+                sign.isEnabled = !compact.isChecked
+            }
+            col.addView(compact)
             col.addView(heading("Formato"))
             format.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, FORMATS)
             format.setSelection(prefs.getInt(PREF_FORMAT, FORMAT_PGP).coerceIn(0, FORMATS.size - 1))
@@ -1604,6 +1619,8 @@ class MainActivity : Activity() {
                     formatHint.text = when (position) {
                         FORMAT_CODE -> "Parece um código ao acaso; não se vê que é PGP. Só quem usa o Reczi cypher o consegue abrir."
                         FORMAT_WORDS -> "Parece uma lista de palavras soltas (fica bem mais comprido). Só quem usa o Reczi cypher o consegue abrir."
+                        FORMAT_POEM -> "Parece um poema em português, em quadras. É o mais comprido: uma mensagem curta dá à volta de 100 versos " +
+                            "(cerca de 50 com o modo compacto). Só quem usa o Reczi cypher o consegue abrir."
                         else -> "Mensagem PGP normal: abre em qualquer programa OpenPGP (GnuPG, etc.), mas vê-se logo que é PGP."
                     }
                 }
@@ -1706,6 +1723,7 @@ class MainActivity : Activity() {
             val fmt = format.selectedItemPosition
             updateCode()
             val code = codeFpr?.takeIf { useCode.isChecked }
+            val small = compact.isChecked
             when {
                 text.isEmpty() -> return alert("Encriptar", "Escreve primeiro a mensagem.")
                 me == null && snap.myKeys.isNotEmpty() -> return alert("Encriptar", "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves.")
@@ -1719,10 +1737,10 @@ class MainActivity : Activity() {
             }
             val run = { chars: CharArray? ->
                 work("A encriptar…", {
-                    try { formatted(vault.encrypt(text, to, me!!, chars != null, chars), fmt, code) } finally { chars?.fill('\u0000') }
-                }) { showOutput("Mensagem encriptada", it) }
+                    try { formatted(vault.encrypt(text, to, me!!, chars != null, chars, toSelf = !small), fmt, code) } finally { chars?.fill('\u0000') }
+                }) { showOutput(if (small) "Mensagem encriptada (compacta: não a consegues reler)" else "Mensagem encriptada", it) }
             }
-            if (sign.isChecked) askPassphrase("Assinar", "Palavra-passe da tua chave:") { run(it) } else run(null)
+            if (sign.isChecked && !small) askPassphrase("Assinar", "Palavra-passe da tua chave:") { run(it) } else run(null)
         }
 
         private fun showOutput(title: String, text: String) {
@@ -2249,7 +2267,9 @@ class MainActivity : Activity() {
         const val FORMAT_PGP = 0
         const val FORMAT_CODE = 1
         const val FORMAT_WORDS = 2
-        val FORMATS = arrayOf("PGP normal", "Disfarçado: código", "Disfarçado: palavras")
+        const val FORMAT_POEM = 3
+        const val PREF_COMPACT = "compact"
+        val FORMATS = arrayOf("PGP normal", "Disfarçado: código", "Disfarçado: palavras", "Disfarçado: poema")
         const val EXPIRY_WARN_DAYS = 30L
         /** Cores da marca Reczi: o preto e o vermelho do ícone. */
         const val BRAND_BLACK = 0xFF121212.toInt()

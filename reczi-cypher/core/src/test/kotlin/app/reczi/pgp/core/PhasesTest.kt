@@ -10,6 +10,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -329,6 +330,66 @@ class PhasesTest {
         val alvo = MemoryStore()
         assertEquals(RestoreResult(0, 0, 0, 0), Vault(alvo).importBackup(forged, backupPass))
         assertTrue(alvo.names().none { it != "verified" })
+    }
+
+    @Test
+    fun poemListsAreAStableAlphabet() {
+        val all = Poem.NOUNS + Poem.ADJECTIVES + Poem.VERBS
+        assertEquals(listOf(256, 256, 256), listOf(Poem.NOUNS.size, Poem.ADJECTIVES.size, Poem.VERBS.size))
+        fun fold(w: String) = java.text.Normalizer.normalize(w.lowercase(), java.text.Normalizer.Form.NFD).filter { it in 'a'..'z' }
+        assertEquals(768, all.map(::fold).toSet().size, "sem repetições, mesmo sem acentos")
+        assertTrue(all.none { fold(it) in Poem.FILLERS })
+        // As listas são o formato: se alguém as mudar, as mensagens antigas deixam de abrir.
+        assertEquals(listOf("rio", "calmo", "dorme"), listOf(Poem.NOUNS[0], Poem.ADJECTIVES[0], Poem.VERBS[0]))
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(all.joinToString(" ").toByteArray())
+        assertEquals("d6661f59d5a5110317e73dd69376cdd79ea0f24278644492d3c500e1fcf08d8f", digest.joinToString("") { "%02x".format(it) })
+        // Todos os valores de byte, em todas as posições, vão e voltam.
+        val every = ByteArray(256 * 3) { (it / 3).toByte() }
+        repeat(20) { assertContentEquals(every, Poem.read(Poem.write(every))) }
+    }
+
+    @Test
+    fun poemDisguiseAndCompactMode() {
+        val (a, r) = pair()
+        val (ana, anaFpr) = a
+        val (rui, ruiFpr) = r
+        val normal = ana.encrypt("às 8 no sítio do costume", listOf(ruiFpr), anaFpr, true, pass)
+        val compact = ana.encrypt("às 8 no sítio do costume", listOf(ruiFpr), anaFpr, false, null, toSelf = false)
+        val nBytes = Pgp.dearmor(normal).size
+        val cBytes = Pgp.dearmor(compact).size
+        val poem = ana.disguise(compact, Disguise.Style.Poem)
+        println("POEM normal=$nBytes bytes, compacto=$cBytes bytes, versos=${poem.lines().count { it.isNotBlank() }}\n$poem")
+        assertTrue(cBytes < nBytes * 6 / 10, "o modo compacto encurta bastante ($cBytes vs $nBytes)")
+
+        // Tem ar de texto: só letras, vírgulas, pontos e quebras de linha; nada de PGP.
+        assertTrue(poem.all { it.isLetter() || it in " ,.\n" })
+        assertFalse(poem.contains("PGP", ignoreCase = true))
+        assertTrue(poem.lines().first().first().isUpperCase())
+        assertNotEquals(poem, ana.disguise(compact, Disguise.Style.Poem))
+
+        // O Rui abre; a Ana (modo compacto: sem cópia para ela) não.
+        val d = rui.decrypt(poem, pass)
+        assertEquals("às 8 no sítio do costume", d.text)
+        assertEquals(SignatureStatus.None, d.signature)
+        assertEquals(1, Pgp.recipientKeyIds(compact).size)
+        assertFalse(ana.isForMe(compact))
+        // Sobrevive ao que as apps de mensagens fazem: tudo numa linha, sem acentos, maiúsculas, pontuação a mais.
+        val flat = java.text.Normalizer.normalize(poem, java.text.Normalizer.Form.NFD).filter { it.code < 128 }.replace("\n", " ").uppercase() + " !!"
+        assertEquals("às 8 no sítio do costume", rui.decrypt(flat, pass).text)
+        // Um verso alterado é detetado; um poema qualquer não é confundido.
+        assertFailsWith<PgpError> { rui.decrypt(poem.replaceFirst(Regex("(?<= )[a-zà-ú]{4,}(?= )"), "rio"), pass) }
+        assertNull(Pgp.undisguise("O rio calmo dorme\nCanta o vento frio sob o monte\nUm barco parte sem destino\nE o lobo velho chora no bosque escuro."))
+
+        // Poema com código secreto, mensagem normal (assinada, com cópia para a Ana).
+        ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray())
+        rui.setCode(anaFpr, "o gato comeu a sardinha".toCharArray())
+        val coded = ana.disguise(normal, Disguise.Style.Poem, ruiFpr)
+        assertNull(Pgp.undisguise(coded))
+        val dc = rui.decrypt(coded, pass)
+        assertEquals("às 8 no sítio do costume", dc.text)
+        assertTrue(dc.signerVerified)
+        assertEquals("Ana <ana@exemplo.pt>", dc.secretCodeWith)
+        assertEquals("às 8 no sítio do costume", ana.decrypt(coded, pass).text)
     }
 
     /** Desenha os módulos como uma imagem, [scale] píxeis por módulo. */

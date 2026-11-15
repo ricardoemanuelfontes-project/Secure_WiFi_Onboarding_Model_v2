@@ -22,8 +22,9 @@ import javax.crypto.spec.SecretKeySpec
  * PGP. A confidencialidade continua a vir só do OpenPGP, por baixo. O disfarce também não esconde
  * que é texto encriptado; só que é PGP.
  *
- * Há duas formas de escrever o resultado: "código" (Base64 URL-safe, curto) e "palavras"
- * (uma palavra portuguesa por byte: fica muito mais comprido, mas parece texto solto e não um código).
+ * Há três formas de escrever o resultado: "código" (Base64 URL-safe, curto), "palavras" (uma
+ * palavra portuguesa por byte: muito mais comprido, mas parece texto solto e não um código) e
+ * "poema" (versos com ar de frase; ver [Poem]).
  *
  * CÓDIGO SECRETO (opcional, por contacto): em vez da chave fixa, a camada de fora pode usar uma
  * chave derivada de uma frase combinada entre duas pessoas ([deriveSecret]). Nesse caso é mesmo uma
@@ -72,14 +73,23 @@ object Disguise {
     private fun derive(label: String): ByteArray =
         MessageDigest.getInstance("SHA-256").digest("Reczi cypher / disfarce v1 / $label".toByteArray(Charsets.UTF_8))
 
+    /** Como o texto disfarçado é escrito: um código, palavras soltas, ou versos (ver [Poem]). */
+    enum class Style { Code, Words, Poem }
+
     /** Disfarça bytes PGP binários (mensagem ou chave pública). */
-    fun hide(pgp: ByteArray, words: Boolean = false, secret: ByteArray? = null): String {
+    fun hide(pgp: ByteArray, words: Boolean = false, secret: ByteArray? = null): String =
+        hide(pgp, if (words) Style.Words else Style.Code, secret)
+
+    fun hide(pgp: ByteArray, style: Style, secret: ByteArray? = null): String {
         val keys = secret?.let(::keysOf) ?: fixed
         val nonce = ByteArray(NONCE).also { random.nextBytes(it) }
         val body = ctr(keys, nonce, pgp)
         val raw = nonce + body + tag(keys, nonce, body)
-        return if (words) raw.joinToString(" ") { WORDS[it.toInt() and 0xff] }
-        else Base64.getUrlEncoder().withoutPadding().encodeToString(raw)
+        return when (style) {
+            Style.Words -> raw.joinToString(" ") { WORDS[it.toInt() and 0xff] }
+            Style.Poem -> Poem.write(raw)
+            Style.Code -> Base64.getUrlEncoder().withoutPadding().encodeToString(raw)
+        }
     }
 
     /**
@@ -93,7 +103,7 @@ object Disguise {
      * índice do código que abriu o texto (-1 se foi a chave fixa da app).
      */
     fun revealWith(text: String, secrets: List<ByteArray>): Pair<ByteArray, Int>? {
-        val candidates = listOfNotNull(fromCode(text), fromWords(text)).filter { it.size > NONCE + TAG }
+        val candidates = listOfNotNull(fromCode(text), fromWords(text), Poem.read(text)).filter { it.size > NONCE + TAG }
         if (candidates.isEmpty()) return null
         val all = listOf(-1 to fixed) + secrets.mapIndexed { i, k -> i to keysOf(k) }
         for (raw in candidates) for ((i, keys) in all) open(raw, keys)?.let { return it to i }

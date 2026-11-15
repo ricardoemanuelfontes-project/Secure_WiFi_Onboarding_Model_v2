@@ -218,9 +218,13 @@ class Vault(private val store: Store) {
      * com esse contacto em vez da chave fixa da app.
      */
     @Synchronized
-    fun disguise(armored: String, words: Boolean, codeFpr: String? = null): String {
+    fun disguise(armored: String, words: Boolean, codeFpr: String? = null): String =
+        disguise(armored, if (words) Disguise.Style.Words else Disguise.Style.Code, codeFpr)
+
+    @Synchronized
+    fun disguise(armored: String, style: Disguise.Style, codeFpr: String? = null): String {
         val secret = codeFpr?.let { code(it) ?: throw PgpError("Não há código secreto combinado com este contacto.") }
-        return Disguise.hide(Pgp.dearmor(armored), words, secret)
+        return Disguise.hide(Pgp.dearmor(armored), style, secret)
     }
 
     /**
@@ -452,20 +456,25 @@ class Vault(private val store: Store) {
      * Encripta para os destinatários indicados e para ti próprio, para conseguires reler o que
      * enviaste. Os destinatários podem ser contactos (têm de estar verificados) ou chaves tuas
      * (p. ex. para guardar uma nota só para ti). Assina se [sign].
+     *
+     * Modo compacto: com [toSelf] a false a mensagem vai só para os destinatários escolhidos (fica
+     * mais curta, mas tu deixas de a conseguir reler); sem [sign] poupa-se também a assinatura.
      */
-    fun encrypt(text: String, recipientFprs: List<String>, myFpr: String, sign: Boolean, passphrase: CharArray?): String {
+    fun encrypt(
+        text: String, recipientFprs: List<String>, myFpr: String, sign: Boolean, passphrase: CharArray?, toSelf: Boolean = true,
+    ): String {
         if (text.isEmpty()) throw PgpError("Escreve primeiro a mensagem.")
         val snap = snapshot()
         val me = snap.myKeys.firstOrNull { it.info.fingerprint == myFpr }?.ring ?: throw PgpError("Chave não encontrada.")
-        return Pgp.encrypt(text, recipients(snap, recipientFprs, myFpr), if (sign) me else null, passphrase)
+        return Pgp.encrypt(text, recipients(snap, recipientFprs, myFpr, toSelf), if (sign) me else null, passphrase)
     }
 
-    private fun recipients(snap: Snapshot, recipientFprs: List<String>, myFpr: String): List<PGPPublicKeyRing> {
+    private fun recipients(snap: Snapshot, recipientFprs: List<String>, myFpr: String, toSelf: Boolean = true): List<PGPPublicKeyRing> {
         if (recipientFprs.isEmpty()) throw PgpError("Escolhe pelo menos um destinatário.")
         val contacts = snap.contacts.associateBy { it.info.fingerprint }
         val mine = snap.myKeys.associateBy { it.info.fingerprint }
         if (myFpr !in mine) throw PgpError("Chave não encontrada.")
-        return (recipientFprs + myFpr).distinct().map { fpr ->
+        return (if (toSelf) recipientFprs + myFpr else recipientFprs).distinct().map { fpr ->
             val own = mine[fpr]
             if (own != null) {
                 if (!own.info.canEncrypt) throw PgpError("A tua chave ${own.info.userId} expirou ou foi revogada.")
