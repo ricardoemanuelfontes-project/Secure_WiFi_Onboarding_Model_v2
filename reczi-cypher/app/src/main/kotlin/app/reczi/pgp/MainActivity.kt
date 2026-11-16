@@ -1800,8 +1800,12 @@ class MainActivity : Activity() {
             mine.forEach { add("Eu: ${it.userId}", it.fingerprint, true, "") }
             val verified = snap.contacts.filter { it.verified }.sortedBy { it.info.userId.lowercase() }
             verified.forEach { c -> add(c.info.userId, c.info.fingerprint, c.info.canEncrypt, if (c.info.revoked) "revogada" else "expirada") }
-            if (verified.isEmpty()) {
-                recipients.addView(label("Ainda não tens destinatários verificados. Adiciona-os no separador Contactos."))
+            if (snap.myKeys.isEmpty()) {
+                // Sem chave tua não há "Eu" nem se pode encriptar: diz porquê e leva lá.
+                recipients.addView(label("Ainda não tens a tua chave nesta app, por isso não há destinatários (nem \"Eu\"). Cria-a ou importa-a no separador Chaves."))
+                recipients.addView(button("Ir para Chaves") { show(TAB_KEYS) })
+            } else if (verified.isEmpty()) {
+                recipients.addView(label("Para escrever a outras pessoas, adiciona-as e verifica-as no separador Contactos. Para testar, escolhe \"Eu\"."))
             }
             myFprs = mine.map { it.fingerprint }
             val selected = myKeySpinner.selectedItemPosition
@@ -2067,8 +2071,8 @@ class MainActivity : Activity() {
         /** Contacto da conversa aberta (botão "Conversa" nos Contactos), se houver. */
         private var conversation: String? = null
         private val banner = column(0)
-        private val readTab = button("Ler") { open(write = false) }
-        private val writeTab = button("Escrever") { open(write = true) }
+        private val readTab = button("Ler (desencriptar)") { open(write = false) }
+        private val writeTab = button("Escrever (encriptar)") { open(write = true) }
         private val body = FrameLayout(this@MainActivity)
         override val view: View = LinearLayout(this@MainActivity).apply {
             orientation = LinearLayout.VERTICAL
