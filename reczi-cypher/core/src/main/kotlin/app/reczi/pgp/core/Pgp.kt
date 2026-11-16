@@ -472,11 +472,15 @@ object Pgp {
      */
     fun sign(text: String, signer: PGPSecretKeyRing, passphrase: CharArray): String {
         if (text.isBlank()) throw PgpError("Escreve primeiro o texto.")
+        // Nas assinaturas em texto claro, os espaços no fim de cada linha não contam (RFC 4880, 7.1):
+        // quem verifica tira-os. A biblioteca assinava-os, e a assinatura saía inválida no GnuPG e
+        // aqui. Tiram-se antes de assinar, para o texto assinado ser exatamente o que se vê.
+        val clean = text.lines().joinToString("\n") { it.trimEnd(' ', '\t') }
         val pp = Passphrase(passphrase.copyOf())
         try {
             val options = ProducerOptions.sign(signing(signer, pp, detached = true)).setCleartextSigned()
             val out = ByteArrayOutputStream()
-            PGPainless.encryptAndOrSign().onOutputStream(out).withOptions(options).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            PGPainless.encryptAndOrSign().onOutputStream(out).withOptions(options).use { it.write(clean.toByteArray(Charsets.UTF_8)) }
             return out.toString(Charsets.UTF_8.name())
         } finally {
             pp.clear()

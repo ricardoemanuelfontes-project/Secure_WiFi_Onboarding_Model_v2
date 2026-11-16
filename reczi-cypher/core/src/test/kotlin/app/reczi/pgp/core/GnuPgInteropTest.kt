@@ -75,6 +75,28 @@ class GnuPgInteropTest {
         }
     }
 
+    /** Texto assinado e ficheiro com assinatura à parte, feitos na app, verificados pelo GnuPG. */
+    @Test
+    fun gnuPgVerifiesAppSignatures() {
+        val mine = Pgp.generate("Ana", "ana@exemplo.pt", appPass, rsa = true)
+        assertEquals(0, gpg("--import", input = Pgp.armor(Pgp.certificateOf(mine)).toByteArray()).rc)
+        // Espaços e tabulações no fim das linhas, linha começada por "-", acentos, linha vazia no fim.
+        val texts = listOf("ola eu sou o reczi ", "linha 1  \nlinha 2\t\n\n- traço\nação ", "simples")
+        for (t in texts) {
+            val signed = Pgp.sign(t, mine, appPass)
+            val r = gpg("--verify", input = signed.toByteArray())
+            assertTrue("GOODSIG" in r.status, "GnuPG recusou: [$t]\n${r.err}")
+            assertTrue(Pgp.verify(signed, listOf(Pgp.certificateOf(mine))).signature is SignatureStatus.Valid)
+        }
+        val data = ByteArray(50_000) { (it * 7).toByte() }
+        val sig = Pgp.signDetached(data.inputStream(), mine, appPass)
+        val dataFile = File(home, "dados.bin").apply { writeBytes(data) }
+        val sigFile = File(home, "dados.bin.asc").apply { writeText(sig) }
+        assertTrue("GOODSIG" in gpg("--verify", sigFile.path, dataFile.path).status)
+        dataFile.writeBytes(data.copyOf().also { it[10] = 99 })
+        assertTrue("BADSIG" in gpg("--verify", sigFile.path, dataFile.path).status)
+    }
+
     private fun gpgFingerprint(): String =
         gpg("--with-colons", "--list-secret-keys").out.toString(Charsets.UTF_8)
             .lines().first { it.startsWith("fpr:") }.split(":")[9]
