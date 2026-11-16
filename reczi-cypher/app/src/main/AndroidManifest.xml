@@ -6,6 +6,8 @@
 
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Impressão digital: desbloquear a app e a palavra-passe guardada (permissão normal, sem pedido). -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application

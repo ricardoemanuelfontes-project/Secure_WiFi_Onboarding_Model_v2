@@ -141,9 +141,9 @@ class QuickPass(private val context: Context) {
             .setRandomizedEncryptionRequired(true)
             .setUserAuthenticationRequired(true)
             .setInvalidatedByBiometricEnrollment(true)
-            .setUnlockedDeviceRequired(true)
-        // 0 segundos: o Android tem de confirmar o dono em cada utilização.
+        // 0 segundos: o Android tem de confirmar o dono em cada utilização; e só com o telemóvel desbloqueado.
         if (Build.VERSION.SDK_INT >= 30) {
+            spec.setUnlockedDeviceRequired(true)
             spec.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL)
         }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
