@@ -46,7 +46,15 @@ android {
     }
 
     buildTypes {
+        // Versão de teste: outro identificador e outro nome, para ficar instalada ao lado da
+        // verdadeira sem a substituir (e sem tocar nas chaves que lá estão).
+        debug {
+            applicationIdSuffix = ".teste"
+            versionNameSuffix = "-teste"
+            manifestPlaceholders["appLabel"] = "Reczi teste"
+        }
         release {
+            manifestPlaceholders["appLabel"] = "Reczi cypher"
             // Sem R8: o BouncyCastle usa reflexão e a app é pequena.
             isMinifyEnabled = false
             if (canSign) signingConfig = signingConfigs.getByName("release")
