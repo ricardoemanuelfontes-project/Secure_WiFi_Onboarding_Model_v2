@@ -15,8 +15,8 @@ android {
         applicationId = "app.reczi.pgp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
     }
 
     // Chave de assinatura da app, FORA do projeto (nunca vai para um repositório):
@@ -77,6 +77,12 @@ android {
         }
     }
 
+    testOptions {
+        // Testes da interface no computador (Robolectric), sem telemóvel nem emulador.
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all { it.maxHeapSize = "2g" }
+    }
+
     dependenciesInfo {
         // Não incluir no APK o bloco de metadados de dependências cifrado para a Google.
         includeInApk = false
@@ -92,4 +98,6 @@ kotlin {
 
 dependencies {
     implementation("app.reczi.pgp:core:1.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

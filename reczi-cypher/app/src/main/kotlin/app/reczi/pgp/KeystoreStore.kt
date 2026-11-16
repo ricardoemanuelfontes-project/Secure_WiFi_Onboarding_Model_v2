@@ -25,12 +25,15 @@ class VaultKeyLostException : IOException("A chave de proteção do cofre deste 
  * As chaves privadas já estão protegidas pela palavra-passe OpenPGP; esta é uma segunda
  * camada que liga os dados a este telemóvel.
  */
-class KeystoreStore(context: Context) : Store {
+class KeystoreStore internal constructor(context: Context, testKey: SecretKey?) : Store {
+    constructor(context: Context) : this(context, null)
+
     private val base = context.noBackupFilesDir
     private val dir = File(base, "vault").apply { mkdirs() }
     /** Nome da chave do Keystore deste cofre (um cofre novo usa sempre um nome novo). */
     private val aliasFile = File(base, "vault-alias")
-    private var key: SecretKey? = null
+    /** Só nos testes (que não têm o Keystore do Android) a chave vem de fora. */
+    private var key: SecretKey? = testKey
 
     private fun alias(): String = aliasFile.takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { null } ?: DEFAULT_ALIAS
 

@@ -20,4 +20,11 @@ object Vaults {
 
     @Synchronized
     fun vault(context: Context): Vault = vault ?: Vault(store(context)).also { vault = it }
+
+    /** Testes: um cofre novo, com uma chave AES comum em vez da do Keystore. */
+    @Synchronized
+    internal fun useForTests(context: Context, key: javax.crypto.SecretKey) {
+        store = KeystoreStore(context.applicationContext, key)
+        vault = Vault(store!!)
+    }
 }

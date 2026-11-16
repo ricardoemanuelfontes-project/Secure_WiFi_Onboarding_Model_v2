@@ -85,8 +85,13 @@ class MainActivity : Activity() {
     private var running = 0
 
     private lateinit var content: FrameLayout
-    private val tabButtons = mutableListOf<Button>()
     private lateinit var screens: List<Screen>
+    // Navegação: barra de cima (☰, título, ajuda) e menu lateral.
+    private lateinit var menuButton: Button
+    private lateinit var titleView: TextView
+    private lateinit var drawer: FrameLayout
+    private lateinit var drawerPanel: LinearLayout
+    private lateinit var signing: SignScreen
     private lateinit var messages: MessagesScreen
     private lateinit var contacts: ContactsScreen
     private lateinit var notes: NotesScreen
@@ -131,34 +136,20 @@ class MainActivity : Activity() {
         contacts = ContactsScreen()
         notes = NotesScreen()
         keys = KeysScreen()
-        // Encriptar e Desencriptar vivem dentro de "Mensagens"; o último separador (⚙) são as definições.
-        screens = listOf(messages, contacts, notes, keys, SettingsScreen())
-        val root = LinearLayout(this).apply {
+        signing = SignScreen()
+        // A ordem é a dos índices TAB_*: Mensagens (Escrever e Ler), Contactos, Notas, Chaves, Definições, Assinar.
+        screens = listOf(messages, contacts, notes, keys, SettingsScreen(), signing)
+        val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-            fitsSystemWindows = true
         }
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(BRAND_BLACK) }
-        screens.forEachIndexed { i, s ->
-            val b = Button(this, null, android.R.attr.buttonBarButtonStyle).apply {
-                text = s.tab
-                contentDescription = s.title
-                isAllCaps = false
-                setTextColor(Color.WHITE)
-                // O texto encolhe para caber numa linha em ecrãs estreitos.
-                maxLines = 1
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(2), paddingTop, dp(2), paddingBottom)
-                setAutoSizeTextTypeUniformWithConfiguration(8, 14, 1, TypedValue.COMPLEX_UNIT_SP)
-                setOnClickListener { if (loaded && !locked) show(i) }
-            }
-            tabButtons += b
-            bar.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, if (s.tab.length <= 2) 0.5f else 1f))
-        }
+        page.addView(topBar())
         content = FrameLayout(this)
-        root.addView(bar)
-        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        page.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        drawer = buildDrawer()
+        val root = FrameLayout(this).apply { fitsSystemWindows = true }
+        root.addView(page)
+        root.addView(drawer)
         setContentView(root)
 
         val fromHistory = (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
@@ -254,7 +245,10 @@ class MainActivity : Activity() {
     private fun showLock() {
         locked = true
         content.removeAllViews()
-        tabButtons.forEach { it.alpha = 0.4f }
+        menuButton.alpha = 0.4f
+        helpButton.visibility = View.GONE
+        titleView.text = "Reczi cypher"
+        if (::drawer.isInitialized) drawer.visibility = View.GONE
         val bio = prefs.getBoolean(PREF_LOCK_BIO, false)
         val col = column(dp(24))
         col.addView(heading("Reczi cypher bloqueada"))
@@ -385,8 +379,8 @@ class MainActivity : Activity() {
         if (lines.isEmpty()) return
         alert(
             "Chaves quase a expirar",
-            lines.joinToString("\n") + "\n\nAs tuas: usa \"Prolongar validade\" no separador Chaves e volta a enviar a chave pública. " +
-                "As dos contactos: pede-lhes a chave atualizada."
+            lines.joinToString("\n") + "\n\nAs tuas: usa Mais opções > \"Prolongar validade\" em ☰ > As minhas chaves e volta a enviar a chave pública. " +
+                "As dos contactos: pede-lhes a chave atualizada. Depois de expirar, a app deixa de encriptar para esse contacto até a importares de novo."
         )
     }
 
@@ -431,7 +425,7 @@ class MainActivity : Activity() {
                 // A mensagem fica como chegou: o cofre tira o disfarce ao desencriptar.
                 "BEGIN PGP MESSAGE" in text || "BEGIN PGP SIGNED MESSAGE" in text -> { dec.setMessage(original); messages.open(write = false) }
                 "BEGIN PGP PUBLIC KEY BLOCK" in text -> { show(TAB_CONTACTS); contacts.input.setText(text) }
-                "BEGIN PGP PRIVATE KEY BLOCK" in text -> alert(title, "Por segurança, importa chaves privadas a partir de um ficheiro, no separador Chaves.")
+                "BEGIN PGP PRIVATE KEY BLOCK" in text -> alert(title, "Por segurança, importa chaves privadas a partir de um ficheiro, em ☰ > As minhas chaves.")
                 else -> { enc.draft.setText(text); messages.open(write = true) }
             }
         }
@@ -444,7 +438,7 @@ class MainActivity : Activity() {
         Button(this, null, android.R.attr.borderlessButtonStyle).apply {
             text = "? Ajuda"
             isAllCaps = false
-            setTextColor(if (isNight) BRAND_RED_LIGHT else BRAND_RED)
+            setTextColor(BRAND_RED_LIGHT)
             setOnClickListener {
                 AlertDialog.Builder(this@MainActivity).setTitle("Ajuda: ${screens[current].title}").setMessage(screens[current].help)
                     .setPositiveButton("OK", null)
@@ -459,7 +453,7 @@ class MainActivity : Activity() {
         if (prefs.getBoolean(PREF_WELCOMED, false)) return
         prefs.edit().putBoolean(PREF_WELCOMED, true).apply()
         if (s.myKeys.isNotEmpty()) return // já usavas a app: não precisas da apresentação
-        alert("Bem-vindo ao Reczi cypher", "$HOW_IT_WORKS\n\nNo separador Chaves tens os primeiros passos, por ordem. O bloqueio da app está no separador ⚙. Em cada separador há um botão \"? Ajuda\".")
+        alert("Bem-vindo ao Reczi cypher", "$HOW_IT_WORKS\n\nEm ☰ > As minhas chaves tens os primeiros passos, por ordem. O bloqueio da app está em ☰ > Definições. Em cada ecrã há um botão \"? Ajuda\".")
     }
 
     /** Chaves privadas de que há registo de backup (ficheiro, papel, ou importadas de um backup). */
@@ -474,12 +468,141 @@ class MainActivity : Activity() {
         current = i
         content.removeAllViews()
         content.addView(screens[i].view)
-        content.addView(helpButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
+        menuButton.alpha = 1f
+        helpButton.visibility = View.VISIBLE
+        titleView.text = screens[i].title
         screens[i].refresh()
-        tabButtons.forEachIndexed { j, b ->
-            b.setTypeface(null, if (j == i) Typeface.BOLD else Typeface.NORMAL)
-            b.setTextColor(if (j == i) BRAND_RED_LIGHT else Color.WHITE)
-            b.alpha = if (j == i) 1f else 0.75f
+    }
+
+    // ------------------------------------------------------------------ navegação: barra e menu lateral
+
+    private fun topBar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(BRAND_BLACK)
+        }
+        menuButton = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
+            text = "☰"
+            textSize = 22f
+            contentDescription = "Menu"
+            setTextColor(Color.WHITE)
+            minWidth = dp(56)
+            setOnClickListener { openDrawer() }
+        }
+        titleView = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            setTypeface(null, Typeface.BOLD)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            text = "Reczi cypher"
+        }
+        bar.addView(menuButton)
+        bar.addView(titleView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(helpButton)
+        return bar
+    }
+
+    /** Entrada do menu: [sub] = indentada dentro de um grupo; [active] = onde estás agora. */
+    private class NavItem(val label: String, val active: () -> Boolean, val go: () -> Unit)
+
+    private fun navGroups(): List<Pair<String, List<NavItem>>> = listOf(
+        "Mensagens" to listOf(
+            NavItem("✉  Escrever (encriptar)", { current == TAB_MESSAGES && messages.writing }) { messages.open(write = true) },
+            NavItem("📥  Ler (desencriptar)", { current == TAB_MESSAGES && !messages.writing }) { messages.open(write = false) },
+            NavItem("📋  Colar e detetar", { false }) { pasteAndRoute() },
+        ),
+        "Assinaturas" to listOf(
+            NavItem("✍  Assinar e verificar", { current == TAB_SIGN }) { show(TAB_SIGN) },
+        ),
+        "Pessoas e chaves" to listOf(
+            NavItem("👥  Contactos", { current == TAB_CONTACTS }) { show(TAB_CONTACTS) },
+            NavItem("🔑  As minhas chaves", { current == TAB_KEYS }) { show(TAB_KEYS) },
+        ),
+        "Outros" to listOf(
+            NavItem("📝  Notas", { current == TAB_NOTES }) { show(TAB_NOTES) },
+            NavItem("⚙  Definições, bloqueio e backup", { current == TAB_SETTINGS }) { show(TAB_SETTINGS) },
+            NavItem("❓  Como funciona", { false }) { alert("Como funciona", HOW_IT_WORKS) },
+        ),
+    )
+
+    private fun buildDrawer(): FrameLayout {
+        val overlay = FrameLayout(this).apply { visibility = View.GONE }
+        // Fundo escurecido: tocar fora do menu fecha-o.
+        overlay.addView(View(this).apply {
+            setBackgroundColor(0x99000000.toInt())
+            setOnClickListener { closeDrawer() }
+        })
+        drawerPanel = column(0).apply {
+            setBackgroundColor(if (isNight) 0xFF1E1E1E.toInt() else Color.WHITE)
+            isClickable = true // não deixa passar toques para o ecrã por baixo
+        }
+        val width = minOf(dp(300), (resources.displayMetrics.widthPixels * 0.82).toInt())
+        overlay.addView(scroll(drawerPanel), FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START))
+        return overlay
+    }
+
+    private fun refreshDrawer() {
+        drawerPanel.removeAllViews()
+        drawerPanel.addView(TextView(this).apply {
+            text = "Reczi cypher"
+            textSize = 20f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(BRAND_BLACK)
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+        })
+        val accent = if (isNight) BRAND_RED_LIGHT else BRAND_RED
+        for ((group, items) in navGroups()) {
+            drawerPanel.addView(TextView(this).apply {
+                text = group.uppercase(Locale.ROOT)
+                textSize = 12f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(accent)
+                setPadding(dp(20), dp(16), dp(20), dp(4))
+            })
+            for (item in items) {
+                val on = item.active()
+                drawerPanel.addView(TextView(this).apply {
+                    text = item.label
+                    textSize = 16f
+                    setTypeface(null, if (on) Typeface.BOLD else Typeface.NORMAL)
+                    if (on) setBackgroundColor(if (isNight) 0x33FFFFFF else 0x14000000)
+                    setPadding(dp(28), dp(12), dp(20), dp(12))
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        closeDrawer()
+                        item.go()
+                    }
+                })
+            }
+        }
+    }
+
+    private fun openDrawer() {
+        if (!loaded || locked) return
+        refreshDrawer()
+        drawer.visibility = View.VISIBLE
+        val panel = drawerPanel.parent as View
+        panel.translationX = -dp(300).toFloat()
+        panel.animate().translationX(0f).setDuration(180).start()
+    }
+
+    private fun closeDrawer() {
+        if (drawer.visibility != View.VISIBLE) return
+        val panel = drawerPanel.parent as View
+        panel.animate().translationX(-panel.width.toFloat()).setDuration(150).withEndAction { drawer.visibility = View.GONE }.start()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when {
+            drawer.visibility == View.VISIBLE -> closeDrawer()
+            // Com a app aberta noutro ecrã, "voltar" leva primeiro às Mensagens.
+            loaded && !locked && current != TAB_MESSAGES -> show(TAB_MESSAGES)
+            else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
     }
 
@@ -647,14 +770,18 @@ class MainActivity : Activity() {
     /**
      * Palavra-passe de uma chave tua. Se estiver guardada (ver [QuickPass]), pede só a impressão digital
      * ou o PIN do telemóvel; senão pede-a escrita, com a opção de a guardar para a próxima vez.
-     * [fpr]: a chave a usar; null quando serve qualquer uma das tuas (desencriptar, notas), e então usa a
-     * única guardada, se houver só uma. O CharArray entregue a [onOk] tem de ser apagado por quem o usa.
+     * [fpr]: a chave a usar. Sem ela, [candidates] são as tuas chaves que servem (as da mensagem, ao
+     * desencriptar), ou todas; usa a primeira com a palavra-passe guardada. O CharArray entregue a
+     * [onOk] tem de ser apagado por quem o usa.
      */
-    private fun keyPassphrase(title: String, hint: String, fpr: String? = null, onCancel: () -> Unit = {}, onOk: (CharArray) -> Unit) {
-        val mine = snap.myKeys.map { it.info.fingerprint }
-        val stored = if (quick.available()) (fpr?.let { listOf(it) } ?: mine).filter { quick.has(it) } else emptyList()
-        val typed = { typedPassphrase(title, hint, fpr ?: mine.singleOrNull(), onCancel, onOk) }
-        val target = stored.singleOrNull() ?: return typed()
+    private fun keyPassphrase(
+        title: String, hint: String, fpr: String? = null, onCancel: () -> Unit = {}, candidates: List<String>? = null,
+        onOk: (CharArray) -> Unit,
+    ) {
+        val keys = fpr?.let { listOf(it) } ?: candidates?.takeIf { it.isNotEmpty() } ?: snap.myKeys.map { it.info.fingerprint }
+        val stored = if (quick.available()) keys.filter { quick.has(it) } else emptyList()
+        val typed = { typedPassphrase(title, hint, keys.singleOrNull(), onCancel, onOk) }
+        val target = stored.firstOrNull() ?: return typed()
         val cipher = quick.decrypter(target) ?: run {
             alert("Impressão digital", "A palavra-passe guardada deixou de servir (por exemplo, juntaste uma impressão digital nova ao telemóvel ou mudaste o bloqueio). Escreve-a e, se quiseres, guarda-a de novo.") { typed() }
             return
@@ -819,6 +946,14 @@ class MainActivity : Activity() {
             if (resultCode == RESULT_OK && locked) unlocked()
             return
         }
+        if (requestCode == REQ_SAVE_TEXT) {
+            val text = pendingText
+            pendingText = null
+            val out = data?.data?.takeIf { resultCode == RESULT_OK } ?: return
+            if (text == null) return work("…", { deleteDocument(out) }) { alert("Guardar", "Não ficou nada guardado. Repete a operação.") }
+            work("A guardar…", { writeTo(out) { it.write(text.toByteArray(Charsets.UTF_8)) } }) { alert("Guardar", "Ficheiro guardado.") }
+            return
+        }
         val kind = pendingOpen
         val backupFpr = pendingBackupFpr
         val input = pendingIn?.let(Uri::parse)
@@ -833,9 +968,10 @@ class MainActivity : Activity() {
             REQ_OPEN -> when (kind) {
                 KIND_FILE_ENC -> work("…", { fileName(uri) }) { name -> pickOutput(uri, KIND_FILE_ENC, "$name.pgp") }
                 KIND_FILE_DEC -> work("A ver o ficheiro…", {
-                    contentResolver.openInputStream(uri)!!.use { vault.isFileForMe(it) } to fileName(uri)
-                }) { (forMe, name) ->
-                    if (!forMe) return@work alert("Desencriptar", "Este ficheiro não foi encriptado para nenhuma das tuas chaves.")
+                    contentResolver.openInputStream(uri)!!.use { vault.myKeysForFile(it) } to fileName(uri)
+                }) { (forKeys, name) ->
+                    dec.fileKeys = forKeys
+                    if (forKeys.isEmpty()) return@work alert("Desencriptar", "Este ficheiro não foi encriptado para nenhuma das tuas chaves.")
                     val plain = Regex("\\.(pgp|gpg|asc)$", RegexOption.IGNORE_CASE).replace(name, "")
                     pickOutput(uri, KIND_FILE_DEC, if (plain != name && plain.isNotEmpty()) plain else "$name.aberto")
                 }
@@ -852,6 +988,9 @@ class MainActivity : Activity() {
                     }
                 }
                 KIND_BACKUP_ALL -> work("A ler o ficheiro…", { readUri(uri, MAX_BACKUP) }) { bytes -> restoreAll(bytes) }
+                KIND_SIGN_FILE -> signing.signFile(uri)
+                KIND_VERIFY_DATA -> signing.verifyPickSignature(uri)
+                KIND_VERIFY_SIG -> signing.verifyFile(uri)
                 else -> work("A ler o ficheiro…", { readUri(uri) }) { bytes ->
                     when (kind) {
                         KIND_PRIVATE -> keys.importPrivate(bytes)
@@ -1090,6 +1229,36 @@ class MainActivity : Activity() {
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Partilhar"))
     }
 
+    /**
+     * Abre a app de email com o texto no corpo, em texto simples. Mantém as linhas tal e qual,
+     * o que importa nas assinaturas: um email em HTML ou com linhas reformatadas deixa de verificar.
+     */
+    private fun email(text: String, subject: String = "") {
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, text)
+            .apply { if (subject.isNotEmpty()) putExtra(Intent.EXTRA_SUBJECT, subject) }
+        // Só apps de email (as que tratam "mailto:").
+        send.selector = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:"))
+        try {
+            startActivity(Intent.createChooser(send, "Enviar por email"))
+        } catch (e: android.content.ActivityNotFoundException) {
+            alert("Email", "Não encontrei nenhuma app de email. Usa Copiar e cola no teu email (em texto simples, não em HTML).")
+        }
+    }
+
+    /** Texto à espera de ser guardado no ficheiro que se está a escolher (só em memória). */
+    private var pendingText: String? = null
+
+    /** Guarda um texto num ficheiro novo, à escolha (p. ex. uma assinatura .asc ou um certificado de revogação). */
+    private fun saveText(name: String, text: String) {
+        pendingText = text
+        startActivityForResult(
+            Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("text/plain")
+                .putExtra(Intent.EXTRA_TITLE, name),
+            REQ_SAVE_TEXT
+        )
+    }
+
     /** Pergunta em que formato partilhar um texto PGP: normal ou disfarçado (ver Disguise no núcleo). */
     private fun pickFormat(armored: String, then: (String) -> Unit) {
         AlertDialog.Builder(this).setTitle("Formato")
@@ -1288,12 +1457,16 @@ class MainActivity : Activity() {
         override val help get() =
             "Aqui estão as TUAS chaves. Cada chave tem duas partes: a pública, que dás aos outros para te escreverem, e a privada, " +
                 "que nunca sai do teu telemóvel e abre o que te enviam.\n\n" +
-                "• Partilhar/Copiar pública e Mostrar QR: para dares a tua chave a alguém.\n" +
-                "• Backup da privada / Backup em papel: uma cópia da chave fora do telemóvel (o backup completo, com contactos e notas, está no ⚙). Sem ela, se perderes o telemóvel ou desinstalares a app, " +
-                "perdes tudo o que te enviaram.\n" +
-                "• Prolongar validade: a chave vale 2 anos; prolonga-a e volta a enviar a pública aos contactos.\n" +
+                "• Partilhar pública e Mostrar QR: para dares a tua chave a alguém.\n" +
+                "• Backup…: a chave privada num ficheiro ou em papel (o backup completo, com contactos e notas, está em ☰ > Definições). " +
+                "Sem backup, se perderes o telemóvel ou desinstalares a app, perdes tudo o que te enviaram. Também aqui: o certificado " +
+                "de revogação, para guardares com o backup e enviares aos contactos se um dia perderes a chave.\n" +
+                "• Mais opções…: copiar ou enviar a pública por email, prolongar validade (a chave vale 2 anos), mudar a palavra-passe, " +
+                "impressão digital, revogar e apagar.\n" +
+                "• Revogar: para sempre. A chave deixa de assinar e, quando enviares a pública revogada, os contactos deixam de a usar. " +
+                "As mensagens antigas continuam a abrir.\n" +
                 "• Mostrar QR também mostra a impressão digital em palavras, para a confirmares com os teus contactos.\n" +
-                "• Usar a impressão digital em vez da palavra-passe: escreves a palavra-passe uma última vez e depois basta o dedo " +
+                "• Impressão digital (em Mais opções): escreves a palavra-passe uma última vez e depois basta o dedo " +
                 "ou o PIN do telemóvel para assinar, desencriptar e abrir notas (Android 11 ou mais recente). Fica guardada no chip de " +
                 "segurança do telemóvel e o Android só a solta depois de te reconhecer. Se juntares uma impressão digital nova ao " +
                 "telemóvel, deixa de servir e voltas a escrevê-la uma vez. Não substitui o backup: a palavra-passe continua a ser precisa noutro telemóvel.\n" +
@@ -1349,8 +1522,8 @@ class MainActivity : Activity() {
             if (done.all { it }) return
             val texts = listOf(
                 "Cria a tua chave (mais abaixo, \"Criar uma chave nova\").",
-                "Faz backup da chave privada para fora do telemóvel (botão \"Backup da privada…\" ou \"Backup em papel…\").",
-                "Troca chaves com alguém: envia-lhe a tua (\"Partilhar pública\" ou \"Mostrar QR\") e importa a dele no separador Contactos.",
+                "Faz backup da chave privada para fora do telemóvel (botão \"Backup…\" da tua chave).",
+                "Troca chaves com alguém: envia-lhe a tua (\"Partilhar pública\" ou \"Mostrar QR\") e importa a dele em ☰ > Contactos.",
                 "Verifica a chave dele: comparem a impressão digital em pessoa ou por chamada. Depois já podes encriptar para ele.",
             )
             val c = card()
@@ -1411,11 +1584,9 @@ class MainActivity : Activity() {
                 c.addView(button("Já tenho backup desta chave") { markBackedUp(info.fingerprint) })
             }
             val pub = Pgp.armor(Pgp.certificateOf(k.ring))
+            if (quick.has(info.fingerprint)) c.addView(label("✔ Palavra-passe com impressão digital (ou o PIN do telemóvel)."))
             c.addView(buttonRow(
                 button("Partilhar pública") { pickFormat(pub) { share(it) } },
-                button("Copiar pública") { pickFormat(pub) { copy(it, sensitive = false) } },
-            ))
-            c.addView(buttonRow(
                 button("Mostrar QR") {
                     showQr(
                         "A tua chave pública", Pgp.certificateOf(k.ring),
@@ -1424,23 +1595,119 @@ class MainActivity : Activity() {
                             "Depois confirmem os dois que a impressão digital acima é a mesma que aparece no telemóvel dele.",
                     )
                 },
-                button("Prolongar validade") { extend(k.ring) },
             ))
-            if (quick.has(info.fingerprint)) {
-                c.addView(label("✔ Palavra-passe com impressão digital (ou o PIN do telemóvel)."))
-                c.addView(button("Voltar a escrever a palavra-passe") {
-                    quick.forget(info.fingerprint)
-                    refresh()
-                })
-            } else {
-                c.addView(button("Usar a impressão digital em vez da palavra-passe…") { enableQuick(info) })
-            }
             c.addView(buttonRow(
-                button("Backup da privada…") { backup(info.fingerprint) },
-                button("Backup em papel…") { paperBackup(info) },
+                button("Backup…") { backupMenu(info) },
+                button("Mais opções…") { moreMenu(k, pub) },
             ))
-            c.addView(button("Apagar esta chave…") { delete(info) })
             return c
+        }
+
+        /** Submenu "Backup…": as cópias da chave e o certificado de revogação. */
+        private fun backupMenu(info: KeyInfo) {
+            val items = arrayOf(
+                "Guardar a chave privada num ficheiro",
+                "Imprimir em papel (QR)",
+                "Certificado de revogação (para um dia, se perderes a chave)",
+            )
+            AlertDialog.Builder(this@MainActivity).setTitle("Backup: ${info.userId}")
+                .setItems(items) { _, i ->
+                    when (i) {
+                        0 -> backup(info.fingerprint)
+                        1 -> paperBackup(info)
+                        2 -> revocationCertificate(info)
+                    }
+                }
+                .setNegativeButton("Fechar", null)
+                .showSecure()
+        }
+
+        /** Submenu "Mais opções…": o resto das ações sobre a chave, as perigosas no fim. */
+        private fun moreMenu(k: MyKey, pub: String) {
+            val info = k.info
+            val actions = mutableListOf<Pair<String, () -> Unit>>(
+                "Copiar a chave pública" to { pickFormat(pub) { copy(it, sensitive = false) } },
+                "Enviar a chave pública por email" to { email(pub, "A minha chave pública PGP") },
+                "Prolongar validade" to { extend(k.ring) },
+                "Mudar a palavra-passe" to { changePassphrase(info) },
+                if (quick.has(info.fingerprint)) "Deixar de usar a impressão digital" to { quick.forget(info.fingerprint); refresh() }
+                else "Usar a impressão digital em vez da palavra-passe" to { enableQuick(info) },
+            )
+            if (!info.revoked) actions += "Revogar esta chave…" to { revoke(info) }
+            actions += "Apagar esta chave…" to { delete(info) }
+            AlertDialog.Builder(this@MainActivity).setTitle(info.userId)
+                .setItems(actions.map { it.first }.toTypedArray()) { _, i -> actions[i].second() }
+                .setNegativeButton("Fechar", null)
+                .showSecure()
+        }
+
+        private fun changePassphrase(info: KeyInfo) {
+            askPassphrase("Mudar a palavra-passe", "${info.userId}\n\nPalavra-passe ATUAL:", fieldHint = "Palavra-passe atual") { old ->
+                askPassphrase(
+                    "Palavra-passe nova",
+                    "Mín. ${Pgp.MIN_PASSPHRASE} caracteres. Os backups antigos desta chave continuam com a palavra-passe antiga.",
+                    repeat = true,
+                    onCancel = { old.fill('\u0000') },
+                ) { new ->
+                    change("A mudar a palavra-passe…", {
+                        try { vault.changePassphrase(info.fingerprint, old, new) } finally { old.fill('\u0000'); new.fill('\u0000') }
+                    }) {
+                        // A palavra-passe guardada para a impressão digital era a antiga.
+                        val hadQuick = quick.has(info.fingerprint)
+                        quick.forget(info.fingerprint)
+                        refresh()
+                        alert(
+                            "Palavra-passe mudada",
+                            "A partir de agora usa a nova." + (if (hadQuick) " Volta a ligar a impressão digital em Mais opções." else "") +
+                                "\n\nFaz um backup novo da chave: os antigos abrem com a palavra-passe antiga.",
+                        )
+                    }
+                }
+            }
+        }
+
+        private fun revocationCertificate(info: KeyInfo) {
+            keyPassphrase(
+                "Certificado de revogação",
+                "Cria um ficheiro que, se um dia perderes a chave ou a palavra-passe (ou alguém a apanhar), envias aos teus contactos " +
+                    "para eles deixarem de a usar. Guarda-o junto ao backup, fora do telemóvel. Criá-lo não revoga nada.\n\nPalavra-passe da tua chave:",
+                info.fingerprint,
+            ) { chars ->
+                work("A criar…", { try { vault.revocationCertificate(info.fingerprint, chars) } finally { chars.fill('\u0000') } }) { cert ->
+                    saveText("revogacao-${info.fingerprint.takeLast(16)}.asc", cert)
+                }
+            }
+        }
+
+        private fun revoke(info: KeyInfo) {
+            val reasons = arrayOf(
+                "Alguém pode ter a chave (telemóvel perdido, palavra-passe vista…)",
+                "Substituí-a por uma chave nova",
+                "Deixei de a usar",
+            )
+            AlertDialog.Builder(this@MainActivity).setTitle("Porque revogas?")
+                .setItems(reasons) { _, i ->
+                    val reason = listOf(Pgp.RevokeReason.Compromised, Pgp.RevokeReason.Superseded, Pgp.RevokeReason.Retired)[i]
+                    typedConfirm(
+                        "Revogar chave",
+                        "${info.userId}\n\nRevogar é para sempre: a chave deixa de assinar e, quando enviares a pública revogada, " +
+                            "os teus contactos deixam de encriptar para ela. As mensagens antigas continuam a abrir aqui.\n\nEscreve REVOGAR para confirmar:",
+                        "REVOGAR",
+                    ) {
+                        keyPassphrase("Revogar chave", "Palavra-passe da tua chave:", info.fingerprint) { chars ->
+                            change("A revogar…", { try { vault.revoke(info.fingerprint, chars, reason) } finally { chars.fill('\u0000') } }) { pub ->
+                                AlertDialog.Builder(this@MainActivity).setTitle("Chave revogada")
+                                    .setMessage("Envia agora a chave pública revogada aos teus contactos (e a quem a publicaste). Ao importarem, deixam de a usar.")
+                                    .setPositiveButton("Partilhar") { _, _ -> share(pub) }
+                                    .setNeutralButton("Email") { _, _ -> email(pub, "Revoguei a minha chave PGP") }
+                                    .setNegativeButton("Depois", null)
+                                    .showSecure()
+                            }
+                        }
+                    }
+                }
+                .setNegativeButton("Cancelar", null)
+                .showSecure()
         }
 
         private fun create() {
@@ -1464,7 +1731,7 @@ class MainActivity : Activity() {
                 alert(
                     "Chave criada",
                     "Impressão digital:\n${Pgp.prettyFingerprint(Pgp.fingerprint(key))}\n\n" +
-                        "Faz já um backup da chave privada (botão \"Backup da privada\") para um local seguro. " +
+                        "Faz já um backup da chave privada (botão \"Backup…\" da chave) para um local seguro. " +
                         "Se desinstalares a app ou perderes o telemóvel sem backup, perdes o acesso às tuas mensagens."
                 )
             }
@@ -1590,11 +1857,11 @@ class MainActivity : Activity() {
         /** Partilha a tua chave pública com um texto que explica à outra pessoa o que fazer. */
         private fun invite() {
             val mine = snap.myKeys.firstOrNull { it.info.canEncrypt }
-                ?: return alert("Convidar", "Cria primeiro a tua chave no separador Chaves.")
+                ?: return alert("Convidar", "Cria primeiro a tua chave em ☰ > As minhas chaves.")
             share(
                 "Olá! Quero trocar mensagens encriptadas contigo com a app Reczi cypher.\n\n" +
                     "1. Instala o Reczi cypher (eu envio-te a app).\n" +
-                    "2. No separador Chaves, cria a tua chave.\n" +
+                    "2. Em ☰ > As minhas chaves, cria a tua chave.\n" +
                     "3. Partilha esta mensagem inteira para o Reczi cypher (ou copia-a e usa \"Colar e detetar\") e carrega em Importar: " +
                     "a minha chave fica nos teus Contactos.\n" +
                     "4. Envia-me a tua chave: Chaves > Partilhar pública.\n" +
@@ -1698,8 +1965,8 @@ class MainActivity : Activity() {
                 "(o destinatário não confirma que é tua) e não fica encriptada para ti (não a consegues reler depois).\n" +
                 "• Código secreto: opção desligada por omissão. Só aparece com um formato disfarçado e um só destinatário com quem combinaste " +
                 "um código; marca-a quando a quiseres usar (fica lembrada para esse contacto).\n" +
-                "• Palavra-passe: se a ligaste à impressão digital (separador Chaves), basta o dedo ou o PIN do telemóvel.\n" +
-                "• Só assinar: o texto NÃO fica secreto, só leva a tua assinatura.\n" +
+                "• Palavra-passe: se a ligaste à impressão digital (☰ > As minhas chaves), basta o dedo ou o PIN do telemóvel.\n" +
+                "• Só assinar (sem encriptar): está em ☰ > Assinar e verificar.\n" +
                 "• Ficheiros e fotografias: usa os destinatários escolhidos acima e guarda um ficheiro .pgp."
 
         init {
@@ -1738,11 +2005,9 @@ class MainActivity : Activity() {
             col.addView(formatHint)
             useCode.setOnClickListener { prefs.edit().putBoolean(PREF_USE_CODE, useCode.isChecked).apply() }
             col.addView(useCode)
-            col.addView(buttonRow(
-                primaryButton("Encriptar") { encrypt() },
-                button("Só assinar") { signOnly() },
-            ))
+            col.addView(primaryButton("Encriptar") { encrypt() })
             col.addView(button("Encriptar um ficheiro ou fotografia…") { pickFile() })
+            col.addView(label("Para assinar sem encriptar (por exemplo, um email ao CERT), usa ☰ > Assinar e verificar."))
             outBox.addView(outTitle)
             outBox.addView(output)
             outBox.addView(buttonRow(
@@ -1750,6 +2015,7 @@ class MainActivity : Activity() {
                 button("Partilhar") { share(output.text.toString()) },
                 button("Limpar") { clearSensitive() },
             ))
+            outBox.addView(button("Enviar por email…") { email(output.text.toString()) })
             outBox.visibility = View.GONE
             col.addView(outBox)
         }
@@ -1802,10 +2068,10 @@ class MainActivity : Activity() {
             verified.forEach { c -> add(c.info.userId, c.info.fingerprint, c.info.canEncrypt, if (c.info.revoked) "revogada" else "expirada") }
             if (snap.myKeys.isEmpty()) {
                 // Sem chave tua não há "Eu" nem se pode encriptar: diz porquê e leva lá.
-                recipients.addView(label("Ainda não tens a tua chave nesta app, por isso não há destinatários (nem \"Eu\"). Cria-a ou importa-a no separador Chaves."))
+                recipients.addView(label("Ainda não tens a tua chave nesta app, por isso não há destinatários (nem \"Eu\"). Cria-a ou importa-a em ☰ > As minhas chaves."))
                 recipients.addView(button("Ir para Chaves") { show(TAB_KEYS) })
             } else if (verified.isEmpty()) {
-                recipients.addView(label("Para escrever a outras pessoas, adiciona-as e verifica-as no separador Contactos. Para testar, escolhe \"Eu\"."))
+                recipients.addView(label("Para escrever a outras pessoas, adiciona-as e verifica-as em ☰ > Contactos. Para testar, escolhe \"Eu\"."))
             }
             myFprs = mine.map { it.fingerprint }
             val selected = myKeySpinner.selectedItemPosition
@@ -1813,7 +2079,7 @@ class MainActivity : Activity() {
             if (selected in mine.indices) myKeySpinner.setSelection(selected)
             myKeySpinner.visibility = if (mine.size > 1) View.VISIBLE else View.GONE
             if (snap.myKeys.isNotEmpty() && mine.isEmpty()) {
-                ownWarning.text = "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves."
+                ownWarning.text = "A tua chave expirou ou foi revogada. Usa Mais opções > \"Prolongar validade\" em ☰ > As minhas chaves."
                 ownWarning.setTextColor(red)
                 ownWarning.visibility = View.VISIBLE
             } else {
@@ -1838,8 +2104,8 @@ class MainActivity : Activity() {
             val small = compact.isChecked
             when {
                 text.isEmpty() -> return alert("Encriptar", "Escreve primeiro a mensagem.")
-                me == null && snap.myKeys.isNotEmpty() -> return alert("Encriptar", "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves.")
-                me == null -> return alert("Encriptar", "Cria primeiro a tua chave no separador Chaves.")
+                me == null && snap.myKeys.isNotEmpty() -> return alert("Encriptar", "A tua chave expirou ou foi revogada. Usa Mais opções > \"Prolongar validade\" em ☰ > As minhas chaves.")
+                me == null -> return alert("Encriptar", "Cria primeiro a tua chave em ☰ > As minhas chaves.")
                 to.isEmpty() -> return alert("Encriptar", "Escolhe pelo menos um destinatário (podes escolher-te a ti).")
             }
             // Com um só contacto (além de ti), lembra o formato e o código para a próxima conversa com ele.
@@ -1866,26 +2132,10 @@ class MainActivity : Activity() {
             val me = myFprs.getOrNull(myKeySpinner.selectedItemPosition.coerceAtLeast(0))
             when {
                 me != null -> {}
-                snap.myKeys.isNotEmpty() -> alert("Chave", "A tua chave expirou ou foi revogada. Usa \"Prolongar validade\" no separador Chaves.")
-                else -> alert("Chave", "Cria primeiro a tua chave no separador Chaves.")
+                snap.myKeys.isNotEmpty() -> alert("Chave", "A tua chave expirou ou foi revogada. Usa Mais opções > \"Prolongar validade\" em ☰ > As minhas chaves.")
+                else -> alert("Chave", "Cria primeiro a tua chave em ☰ > As minhas chaves.")
             }
             return me
-        }
-
-        /** Assina o texto sem o encriptar: fica legível por toda a gente, com a tua assinatura. */
-        private fun signOnly() {
-            val text = draft.text.toString()
-            if (text.isBlank()) return alert("Assinar", "Escreve primeiro o texto.")
-            val me = myKey() ?: return
-            keyPassphrase(
-                "Só assinar",
-                "O texto NÃO fica encriptado: qualquer pessoa o consegue ler. A assinatura só prova que é teu.\n\nPalavra-passe da tua chave:",
-                me,
-            ) { chars ->
-                work("A assinar…", { try { vault.sign(text, me, chars) } finally { chars.fill('\u0000') } }) {
-                    showOutput("Texto assinado (não está encriptado)", it)
-                }
-            }
         }
 
         /** Encriptar um ficheiro: usa os destinatários, a chave e a opção "Assinar" deste ecrã. */
@@ -1928,6 +2178,8 @@ class MainActivity : Activity() {
     }
 
     private inner class DecryptScreen : Screen("Desencriptar") {
+        /** As tuas chaves para as quais o ficheiro a desencriptar foi feito. */
+        var fileKeys: List<String>? = null
         private val input = textArea("Cola aqui a mensagem (normal ou disfarçada)", 5, mono = true)
         private val fileLabel = label("").apply { visibility = View.GONE }
         private var fileMessage: String? = null
@@ -2012,9 +2264,9 @@ class MainActivity : Activity() {
             if (msg.isEmpty()) return
             clearSensitive()
             if (Pgp.isSignedText(msg)) return work("A verificar a assinatura…", { vault.verify(msg) }) { showResult(it, signedOnly = true) }
-            work("A verificar…", { vault.isForMe(msg) }) { forMe ->
-                if (!forMe) return@work alert("Desencriptar", "Esta mensagem não foi encriptada para nenhuma das tuas chaves.")
-                keyPassphrase("Desencriptar", "Palavra-passe da tua chave:") { chars ->
+            work("A verificar…", { vault.myKeysFor(msg) }) { forKeys ->
+                if (forKeys.isEmpty()) return@work alert("Desencriptar", "Esta mensagem não foi encriptada para nenhuma das tuas chaves.")
+                keyPassphrase("Desencriptar", "Palavra-passe da tua chave:", candidates = forKeys) { chars ->
                     work("A desencriptar…", {
                         try { vault.decrypt(msg, chars) } finally { chars.fill('\u0000') }
                     }) { showResult(it) }
@@ -2024,7 +2276,9 @@ class MainActivity : Activity() {
 
         /** Desencripta um ficheiro já escolhido para o destino já escolhido. */
         fun decryptFile(input: Uri, out: Uri) {
-            keyPassphrase("Desencriptar ficheiro", "Palavra-passe da tua chave:", onCancel = { work("…", { deleteDocument(out) }) {} }) { chars ->
+            keyPassphrase(
+                "Desencriptar ficheiro", "Palavra-passe da tua chave:", onCancel = { work("…", { deleteDocument(out) }) {} }, candidates = fileKeys,
+            ) { chars ->
                 work("A desencriptar o ficheiro…", {
                     try {
                         // Se falhar (ficheiro alterado, palavra-passe errada...), o que já foi escrito é apagado.
@@ -2068,7 +2322,8 @@ class MainActivity : Activity() {
      */
     private inner class MessagesScreen : Screen("Mensagens") {
         /** Abre em Escrever: o que se recebe chega a Ler sozinho (Colar e detetar, partilha, Conversa). */
-        private var writing = true
+        var writing = true
+            private set
         /** Contacto da conversa aberta (botão "Conversa" nos Contactos), se houver. */
         private var conversation: String? = null
         private val banner = column(0)
@@ -2120,6 +2375,7 @@ class MainActivity : Activity() {
                     button("Sair") { conversation = null; refresh() },
                 ))
             }
+            titleView.text = if (writing) "Escrever (encriptar)" else "Ler (desencriptar)"
             val active = if (writing) enc else dec
             if (body.getChildAt(0) !== active.view) {
                 body.removeAllViews()
@@ -2138,6 +2394,150 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Assinar e verificar, sem encriptar: texto (p. ex. um email ao CERT) e ficheiros com a
+     * assinatura à parte (.asc). Quem recebe vê o conteúdo; a assinatura prova que é teu e que
+     * não foi alterado.
+     */
+    private inner class SignScreen : Screen("Assinar e verificar") {
+        private val draft = textArea("Texto a assinar", 5)
+        private val keySpinner = Spinner(this@MainActivity)
+        private var signers = listOf<String>()
+        private val output = textArea("", 5, mono = true).apply { keyListener = null; setTextIsSelectable(true) }
+        private val outBox = column(0)
+        private val check = textArea("Cola aqui o texto assinado que recebeste", 5, mono = true)
+        private val checkResult = TextView(this@MainActivity).apply { setPadding(0, dp(8), 0, dp(8)); visibility = View.GONE }
+        /** Verificar ficheiro: o ficheiro já escolhido, à espera da assinatura. */
+        private var verifyData: Uri? = null
+        private val col = column()
+        override val view: View = scroll(col)
+        override val help get() =
+            "Aqui assinas SEM encriptar: quem recebe lê tudo, e a assinatura prova que foste tu e que nada foi alterado. " +
+                "É o que se usa para emails a uma equipa de segurança (CERT), avisos públicos ou anexos.\n\n" +
+                "• Assinar texto: escreve, carrega em Assinar e envia por email em texto simples (não em HTML). " +
+                "Não mexas no texto depois de assinado, nem num espaço.\n" +
+                "• Verificar texto: cola um texto assinado que recebeste. Só fica VERIFICADA se tiveres a chave da pessoa nos Contactos e a tiveres verificado.\n" +
+                "• Assinar ficheiro: o ficheiro não muda; é criado um ficheiro à parte (nome.asc) que envias junto com ele.\n" +
+                "• Verificar ficheiro: escolhe o ficheiro e depois a assinatura (.asc ou .sig).\n\n" +
+                "Para quem recebe sem o Reczi cypher: no GnuPG, gpg --verify nome.asc nome."
+
+        init {
+            col.addView(heading("Assinar texto"))
+            col.addView(draft)
+            col.addView(keySpinner)
+            col.addView(primaryButton("Assinar") { signText() })
+            outBox.addView(label("Texto assinado (não está encriptado):"))
+            outBox.addView(output)
+            outBox.addView(buttonRow(
+                button("Copiar") { copy(output.text.toString(), sensitive = false) },
+                button("Partilhar") { share(output.text.toString()) },
+            ))
+            outBox.addView(button("Enviar por email…") { email(output.text.toString()) })
+            outBox.visibility = View.GONE
+            col.addView(outBox)
+
+            col.addView(heading("Verificar texto assinado"))
+            col.addView(check)
+            col.addView(buttonRow(
+                button("Colar") { check.setText(pasteText()) },
+                primaryButton("Verificar") { verifyText() },
+            ))
+            col.addView(checkResult)
+
+            col.addView(heading("Ficheiros"))
+            col.addView(label("A assinatura fica num ficheiro à parte (.asc); o original não é alterado."))
+            col.addView(button("Assinar um ficheiro…") { if (myKey() != null) openFile(KIND_SIGN_FILE) })
+            col.addView(button("Verificar um ficheiro…") {
+                alert("Verificar ficheiro", "Escolhe primeiro o ficheiro e depois a assinatura (.asc ou .sig).") { openFile(KIND_VERIFY_DATA) }
+            })
+        }
+
+        override fun refresh() {
+            val mine = snap.myKeys.map { it.info }.filter { it.canSign }
+            signers = mine.map { it.fingerprint }
+            val selected = keySpinner.selectedItemPosition
+            keySpinner.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, mine.map { "Assinar como: ${it.userId}" })
+            if (selected in mine.indices) keySpinner.setSelection(selected)
+            keySpinner.visibility = if (mine.size > 1) View.VISIBLE else View.GONE
+        }
+
+        override fun clearSensitive() {
+            draft.setText("")
+            output.setText("")
+            outBox.visibility = View.GONE
+            check.setText("")
+            checkResult.visibility = View.GONE
+        }
+
+        private fun myKey(): String? {
+            val me = signers.getOrNull(keySpinner.selectedItemPosition.coerceAtLeast(0))
+            if (me == null) {
+                alert(
+                    "Assinar",
+                    if (snap.myKeys.isEmpty()) "Cria ou importa primeiro a tua chave em ☰ > As minhas chaves."
+                    else "A tua chave expirou ou foi revogada: já não pode assinar. Vê em ☰ > As minhas chaves.",
+                )
+            }
+            return me
+        }
+
+        private fun signText() {
+            val text = draft.text.toString()
+            if (text.isBlank()) return alert("Assinar", "Escreve primeiro o texto.")
+            val me = myKey() ?: return
+            keyPassphrase("Assinar", "O texto NÃO fica encriptado: qualquer pessoa o consegue ler.\n\nPalavra-passe da tua chave:", me) { chars ->
+                work("A assinar…", { try { vault.sign(text, me, chars) } finally { chars.fill('\u0000') } }) {
+                    output.setText(it)
+                    outBox.visibility = View.VISIBLE
+                    output.post { (view as ScrollView).smoothScrollTo(0, outBox.top) }
+                }
+            }
+        }
+
+        private fun verifyText() {
+            val text = check.text.toString().trim()
+            if (text.isEmpty()) return alert("Verificar", "Cola primeiro o texto assinado.")
+            if (!Pgp.isSignedText(text)) {
+                return alert("Verificar", "Isto não é um texto assinado (falta \"-----BEGIN PGP SIGNED MESSAGE-----\"). Se for uma mensagem encriptada, abre-a em ☰ > Ler.")
+            }
+            work("A verificar…", { vault.verify(text) }) { r ->
+                val (msg, color) = signatureText(r)
+                checkResult.text = msg
+                checkResult.setTextColor(color)
+                checkResult.visibility = View.VISIBLE
+            }
+        }
+
+        /** Escolhido o ficheiro: pede a palavra-passe, assina e pergunta onde guardar a assinatura. */
+        fun signFile(input: Uri) {
+            val me = myKey() ?: return
+            work("…", { fileName(input) }) { name ->
+                keyPassphrase("Assinar ficheiro", "$name\n\nPalavra-passe da tua chave:", me) { chars ->
+                    work("A assinar o ficheiro…", {
+                        try { contentResolver.openInputStream(input)!!.use { vault.signDetached(it, me, chars) } } finally { chars.fill('\u0000') }
+                    }) { sig -> saveText("$name.asc", sig) }
+                }
+            }
+        }
+
+        fun verifyPickSignature(data: Uri) {
+            verifyData = data
+            openFile(KIND_VERIFY_SIG)
+        }
+
+        fun verifyFile(signature: Uri) {
+            val data = verifyData ?: return alert("Verificar ficheiro", "Escolhe primeiro o ficheiro e depois a assinatura.")
+            verifyData = null
+            work("A verificar o ficheiro…", {
+                val sig = readUri(signature, MAX_SIGNATURE)
+                fileName(data) to vault.verifyDetached({ contentResolver.openInputStream(data)!! }, sig)
+            }) { (name, r) ->
+                val (msg, _) = signatureText(r)
+                alert("Verificar ficheiro", "$name\n\n$msg")
+            }
+        }
+    }
+
     /** Definições: o bloqueio da app e a ajuda geral. */
     private inner class SettingsScreen : Screen("Definições") {
         override val tab get() = "⚙"
@@ -2151,7 +2551,7 @@ class MainActivity : Activity() {
                 "• PIN de pânico: escrito no ecrã de bloqueio, APAGA TUDO e abre a app vazia. Não há volta.\n\n" +
                 "O bloqueio não substitui a palavra-passe da chave, que continua a ser pedida para assinar e desencriptar.\n\n" +
                 "Backup completo: guarda tudo num ficheiro com palavra-passe própria (chaves, contactos, verificações, códigos secretos e notas; " +
-                "os PINs não). No telemóvel novo, instala a app e usa Restaurar. O \"Backup da privada\", em Chaves, guarda só a chave."
+                "os PINs não). No telemóvel novo, instala a app e usa Restaurar. O \"Backup…\" de cada chave, em As minhas chaves, guarda só essa chave."
 
         init {
             col.addView(heading("Bloqueio da app"))
@@ -2180,7 +2580,7 @@ class MainActivity : Activity() {
             lockBox.addView(label(
                 "O bloqueio trava quem pegar no telemóvel desbloqueado: pede-se ao abrir a app e depois de 1 minuto fora dela. " +
                     "A palavra-passe da chave continua a ser pedida para assinar e desencriptar; para a trocar pela impressão digital, " +
-                    "usa \"Usar a impressão digital em vez da palavra-passe\" no separador Chaves."
+                    "usa Mais opções > \"Usar a impressão digital\" em ☰ > As minhas chaves."
             ))
             lockBox.addView(CheckBox(this@MainActivity).apply {
                 text = "Desbloquear com a impressão digital (ou o bloqueio do telemóvel)"
@@ -2340,7 +2740,10 @@ class MainActivity : Activity() {
         const val REQ_SAVE = 2
         const val TAB_MESSAGES = 0
         const val TAB_CONTACTS = 1
+        const val TAB_NOTES = 2
         const val TAB_KEYS = 3
+        const val TAB_SETTINGS = 4
+        const val TAB_SIGN = 5
         const val PREF_CONTACT_FORMAT = "fmt-"
         const val PREF_CONTACT_CODE = "usecode-"
         const val PREF_WELCOMED = "welcomed"
@@ -2363,6 +2766,12 @@ class MainActivity : Activity() {
         const val STATE_SAVE = "pendingSave"
         const val STATE_SCAN = "pendingScan"
         const val KIND_FILE_ENC = "fileEnc"
+        const val KIND_SIGN_FILE = "signFile"
+        /** Um ficheiro de assinatura é pequeno; acima disto não é uma assinatura. */
+        const val MAX_SIGNATURE = 1 shl 20
+        const val KIND_VERIFY_DATA = "verifyData"
+        const val KIND_VERIFY_SIG = "verifySig"
+        const val REQ_SAVE_TEXT = 40
         const val KIND_FILE_DEC = "fileDec"
         const val KIND_QR_PUBLIC = "qrPublic"
         const val KIND_QR_PRIVATE = "qrPrivate"

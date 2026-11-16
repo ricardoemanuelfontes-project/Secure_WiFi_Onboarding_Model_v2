@@ -12,8 +12,13 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 - **Desencriptar**: mostra o texto só depois de confirmar a integridade, e diz quem assinou.
   O botão "Responder" abre o Encriptar já com o remetente escolhido.
 - **Avisos de validade**: ao abrir, a app avisa das chaves que expiram nos próximos 30 dias.
-- **Só assinar**: em Encriptar, "Só assinar" assina um texto sem o encriptar (fica legível por
-  todos, serve para provar que é teu). Em Desencriptar, um texto assinado é verificado.
+- **Assinar e verificar** (sem encriptar): texto assinado em claro, pronto a enviar por email
+  (por exemplo a um CERT), e ficheiros com a assinatura à parte (`nome.asc`, que o GnuPG verifica
+  com `gpg --verify nome.asc nome`). Verifica textos assinados e ficheiros com `.asc` ou `.sig`.
+- **Revogar e mudar a palavra-passe**: revogar uma chave (para sempre: deixa de assinar, e os
+  contactos deixam de encriptar para ela quando importarem a pública revogada; as mensagens
+  antigas continuam a abrir), guardar antes um certificado de revogação, e mudar a palavra-passe.
+- **Sem "Version:"**: as mensagens, assinaturas e chaves exportadas não dizem que programa as fez.
 - **Ficheiros e fotografias**: "Encriptar um ficheiro…" usa os destinatários escolhidos e guarda
   um `.pgp` normal (abre também no GnuPG); "Desencriptar um ficheiro…" faz o inverso. Se a
   desencriptação falhar, o ficheiro incompleto é apagado.
@@ -29,8 +34,17 @@ App Android para encriptar e desencriptar mensagens com OpenPGP, compatível com
 
 ## Organização da app
 
-Separadores: **Mensagens** (Ler e Escrever, que são o Desencriptar e o Encriptar), **Contactos**,
-**Notas**, **Chaves** e **⚙** (bloqueio da app e ajuda).
+Uma barra em cima com **☰** (menu), o nome do ecrã e **? Ajuda**. O menu lateral está agrupado:
+
+- **Mensagens**: Escrever (encriptar), Ler (desencriptar), Colar e detetar.
+- **Assinaturas**: Assinar e verificar.
+- **Pessoas e chaves**: Contactos, As minhas chaves.
+- **Outros**: Notas, Definições (bloqueio e backup completo), Como funciona.
+
+Em cada chave, as ações menos usadas estão em dois submenus: **Backup…** (ficheiro, papel,
+certificado de revogação) e **Mais opções…** (copiar/enviar a pública, prolongar validade, mudar a
+palavra-passe, impressão digital, revogar, apagar). O menu só abre com a app desbloqueada, e o
+botão "voltar" fecha-o ou regressa às Mensagens.
 
 - **Colar e detetar**: em Mensagens, vê o que está na área de transferência e leva-o para o sítio
   certo (mensagem para Ler, chave pública para Contactos, texto normal para Escrever).
@@ -43,7 +57,7 @@ Separadores: **Mensagens** (Ler e Escrever, que são o Desencriptar e o Encripta
 
 ## Backup completo
 
-No separador ⚙, "Guardar backup…" cria um só ficheiro (`.rczbak`) com as chaves privadas, os
+Em ☰ > Definições, "Guardar backup…" cria um só ficheiro (`.rczbak`) com as chaves privadas, os
 contactos e as verificações, os códigos secretos e as notas; "Restaurar…" junta-o ao cofre de
 outro telemóvel, sem apagar nem substituir o que lá estiver. Os PINs da app não vão.
 
@@ -53,16 +67,16 @@ As chaves privadas lá dentro continuam protegidas pela sua própria palavra-pas
 ## Ajuda dentro da app
 
 - **Bem-vindo**: na primeira abertura sem chaves, uma explicação curta de como funciona.
-- **Primeiros passos**: no separador Chaves, uma lista (criar chave, backup, trocar chaves,
+- **Primeiros passos**: em As minhas chaves, uma lista (criar chave, backup, trocar chaves,
   verificar) que se vai riscando sozinha e desaparece quando está tudo feito.
-- **? Ajuda**: em cada separador, explica o que esse ecrã faz.
+- **? Ajuda**: em cada ecrã, explica o que esse ecrã faz.
 - **Lembrete de backup**: cada chave sem backup registado mostra um aviso, e definir o PIN de
   pânico sem backup pede confirmação. Conta como backup: guardar em ficheiro, imprimir em papel,
   ou a chave ter sido importada. O registo fica só nas preferências da app.
 
 ## Bloqueio da app
 
-No separador ⚙:
+Em ☰ > Definições:
 
 - **Impressão digital / bloqueio do telemóvel**: pedido ao abrir e depois de 1 minuto fora da app.
 - **PIN da app**: um PIN próprio (guardado só como scrypt com sal). A partir da 5.ª tentativa
@@ -77,7 +91,7 @@ palavra-passe OpenPGP.
 
 ## Palavra-passe com impressão digital (opcional)
 
-Em Chaves, cada chave tem "Usar a impressão digital em vez da palavra-passe" (Android 11 ou mais
+Em As minhas chaves, cada chave tem "Mais opções… > Usar a impressão digital" (Android 11 ou mais
 recente, com bloqueio de ecrã). Escreve-se a palavra-passe uma última vez; depois, para assinar,
 desencriptar, abrir notas e prolongar a validade basta a impressão digital ou o PIN/padrão do
 telemóvel. Também aparece como opção ("Da próxima vez, usar a impressão digital") na janela que
@@ -166,6 +180,9 @@ Limites do disfarce sem código secreto, para não haver ilusões:
 - `core/`: a criptografia e o cofre, em Kotlin puro. Tem testes que incluem trocas reais com o
   GnuPG 2.4 nos dois sentidos.
 - `app/`: a interface Android (só a framework, sem AndroidX) e o armazenamento no Keystore.
+  Tem testes da interface (Robolectric, correm no computador sem telemóvel): criar chave,
+  encriptar para ti e ler, assinar e verificar, o menu e os submenus das chaves. Só os testes usam
+  AndroidX; o APK não leva nenhuma dependência AndroidX.
 
 ## Compilar
 
@@ -173,7 +190,8 @@ Precisa de JDK 17+ e do SDK do Android (plataforma 35).
 
 ```bash
 cd core && ../gradlew test        # testes do núcleo (precisa do gpg instalado para os de interoperabilidade)
-cd .. && ./gradlew :app:assembleRelease
+cd .. && ./gradlew :app:testDebugUnitTest   # testes da interface
+./gradlew :app:assembleRelease
 # APK em app/build/outputs/apk/release/app-release.apk
 ```
 
