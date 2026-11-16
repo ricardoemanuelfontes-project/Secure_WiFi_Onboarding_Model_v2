@@ -2067,7 +2067,8 @@ class MainActivity : Activity() {
      * "Colar e detetar" por cima. Numa conversa, fica virado para um contacto.
      */
     private inner class MessagesScreen : Screen("Mensagens") {
-        private var writing = false
+        /** Abre em Escrever: o que se recebe chega a Ler sozinho (Colar e detetar, partilha, Conversa). */
+        private var writing = true
         /** Contacto da conversa aberta (botão "Conversa" nos Contactos), se houver. */
         private var conversation: String? = null
         private val banner = column(0)
