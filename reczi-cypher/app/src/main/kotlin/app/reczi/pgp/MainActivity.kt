@@ -611,7 +611,7 @@ class MainActivity : Activity() {
     /** Pede a palavra-passe; o CharArray entregue a [onOk] tem de ser apagado por quem o usa. */
     private fun askPassphrase(
         title: String, hint: String, repeat: Boolean = false, fieldHint: String = "Palavra-passe", numeric: Boolean = false,
-        onCancel: () -> Unit = {}, onOk: (CharArray) -> Unit,
+        onCancel: () -> Unit = {}, extra: View? = null, onOk: (CharArray) -> Unit,
     ) {
         val box = column(dp(20))
         if (hint.isNotEmpty()) box.addView(TextView(this).apply { text = hint })
@@ -622,6 +622,7 @@ class MainActivity : Activity() {
         box.addView(p1)
         if (repeat) box.addView(p2)
         box.addView(showToggle(p1, p2))
+        extra?.let { box.addView(it) }
         val dialog = AlertDialog.Builder(this).setTitle(title).setView(box)
             .setPositiveButton("OK", null).setNegativeButton("Cancelar") { _, _ -> p1.setText(""); p2.setText(""); onCancel() }
             .setOnCancelListener { onCancel() }
@@ -639,6 +640,96 @@ class MainActivity : Activity() {
         guard(dialog.getButton(AlertDialog.BUTTON_POSITIVE))
         p1.requestFocus()
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+    }
+
+    // ------------------------------------------------------------------ palavra-passe com impressão digital
+
+    /**
+     * Palavra-passe de uma chave tua. Se estiver guardada (ver [QuickPass]), pede só a impressão digital
+     * ou o PIN do telemóvel; senão pede-a escrita, com a opção de a guardar para a próxima vez.
+     * [fpr]: a chave a usar; null quando serve qualquer uma das tuas (desencriptar, notas), e então usa a
+     * única guardada, se houver só uma. O CharArray entregue a [onOk] tem de ser apagado por quem o usa.
+     */
+    private fun keyPassphrase(title: String, hint: String, fpr: String? = null, onCancel: () -> Unit = {}, onOk: (CharArray) -> Unit) {
+        val mine = snap.myKeys.map { it.info.fingerprint }
+        val stored = if (quick.available()) (fpr?.let { listOf(it) } ?: mine).filter { quick.has(it) } else emptyList()
+        val typed = { typedPassphrase(title, hint, fpr ?: mine.singleOrNull(), onCancel, onOk) }
+        val target = stored.singleOrNull() ?: return typed()
+        val cipher = quick.decrypter(target) ?: run {
+            alert("Impressão digital", "A palavra-passe guardada deixou de servir (por exemplo, juntaste uma impressão digital nova ao telemóvel ou mudaste o bloqueio). Escreve-a e, se quiseres, guarda-a de novo.") { typed() }
+            return
+        }
+        authorize(cipher, title, onFail = typed) { ok ->
+            val chars = runCatching { quick.open(target, ok) }.getOrNull() ?: return@authorize typed()
+            onOk(chars)
+        }
+    }
+
+    /** Pede a palavra-passe escrita; [rememberFpr]: chave para a qual se oferece "usar a impressão digital". */
+    private fun typedPassphrase(title: String, hint: String, rememberFpr: String?, onCancel: () -> Unit, onOk: (CharArray) -> Unit) {
+        val remember = CheckBox(this).apply {
+            text = "Da próxima vez, usar a impressão digital (ou o PIN do telemóvel)"
+            isChecked = false
+        }
+        val offer = rememberFpr != null && quick.available() && !quick.has(rememberFpr)
+        askPassphrase(title, hint, onCancel = onCancel, extra = remember.takeIf { offer }) { chars ->
+            if (offer && remember.isChecked) rememberPassphrase(rememberFpr!!, chars) { onOk(chars) } else onOk(chars)
+        }
+    }
+
+    /**
+     * Guarda [chars] para a chave [fpr] depois de confirmar que é a palavra-passe certa e de o Android
+     * confirmar o dono. Não apaga [chars]: no fim chama [then], que fica com essa responsabilidade.
+     */
+    private fun rememberPassphrase(fpr: String, chars: CharArray, then: () -> Unit) {
+        work("A verificar…", { runCatching { Pgp.checkPassphrase(vault.myKey(fpr), chars) }.getOrDefault(false) }) { right ->
+            if (!right) return@work alert("Impressão digital", "A palavra-passe está errada, por isso não foi guardada.", then)
+            val cipher = try { quick.encrypter() } catch (e: Exception) {
+                return@work alert("Impressão digital", "Este telemóvel não deixou guardar a palavra-passe (${e.javaClass.simpleName}).", then)
+            }
+            authorize(cipher, "Guardar a palavra-passe", onFail = then) { ok ->
+                val saved = runCatching { quick.save(fpr, ok, chars) }.isSuccess
+                screens[current].refresh()
+                if (saved) then() else alert("Impressão digital", "Não foi possível guardar a palavra-passe.", then)
+            }
+        }
+    }
+
+    /** Liga a impressão digital a uma chave a partir do separador Chaves. */
+    private fun enableQuick(info: KeyInfo) {
+        if (!quick.available()) {
+            return alert(
+                "Impressão digital",
+                "Precisa de Android 11 ou mais recente e de um bloqueio de ecrã definido (impressão digital, PIN, padrão ou palavra-passe)."
+            )
+        }
+        askPassphrase("Usar a impressão digital", "${info.userId}\n\nEscreve uma última vez a palavra-passe desta chave:") { chars ->
+            rememberPassphrase(info.fingerprint, chars) {
+                chars.fill('\u0000')
+                if (quick.has(info.fingerprint)) alert("Impressão digital", "Feito. A partir de agora, onde se pedia a palavra-passe desta chave basta a impressão digital ou o PIN do telemóvel.")
+            }
+        }
+    }
+
+    /** Pede ao Android a impressão digital (ou o PIN do telemóvel) e devolve a cifra autorizada. */
+    private fun authorize(cipher: javax.crypto.Cipher, subtitle: String, onFail: () -> Unit, onOk: (javax.crypto.Cipher) -> Unit) {
+        if (Build.VERSION.SDK_INT < 30) return onFail()
+        BiometricPrompt.Builder(this)
+            .setTitle("Reczi cypher")
+            .setSubtitle(subtitle)
+            .setAllowedAuthenticators(QuickPass.AUTHENTICATORS)
+            .build()
+            .authenticate(BiometricPrompt.CryptoObject(cipher), CancellationSignal(), mainExecutor, object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                    if (isDestroyed) return
+                    val ok = result?.cryptoObject?.cipher ?: return onFail()
+                    onOk(ok)
+                }
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                    // Cancelado ou bloqueado: escreve-se a palavra-passe como antes.
+                    if (!isDestroyed) onFail()
+                }
+            })
     }
 
     /** A impressão digital em palavras, cinco por linha. */
@@ -1039,6 +1130,8 @@ class MainActivity : Activity() {
     }
 
     private val prefs get() = getSharedPreferences("prefs", Context.MODE_PRIVATE)
+    /** Palavras-passe guardadas para desbloquear com a impressão digital. */
+    private val quick by lazy { QuickPass(applicationContext) }
 
     // ------------------------------------------------------------------ ajudas de interface
 
@@ -1200,6 +1293,10 @@ class MainActivity : Activity() {
                 "perdes tudo o que te enviaram.\n" +
                 "• Prolongar validade: a chave vale 2 anos; prolonga-a e volta a enviar a pública aos contactos.\n" +
                 "• Mostrar QR também mostra a impressão digital em palavras, para a confirmares com os teus contactos.\n" +
+                "• Usar a impressão digital em vez da palavra-passe: escreves a palavra-passe uma última vez e depois basta o dedo " +
+                "ou o PIN do telemóvel para assinar, desencriptar e abrir notas (Android 11 ou mais recente). Fica guardada no chip de " +
+                "segurança do telemóvel e o Android só a solta depois de te reconhecer. Se juntares uma impressão digital nova ao " +
+                "telemóvel, deixa de servir e voltas a escrevê-la uma vez. Não substitui o backup: a palavra-passe continua a ser precisa noutro telemóvel.\n" +
                 "• Tipo de chave: Curve25519 é o recomendado (chaves e mensagens pequenas, cabe num só QR). RSA 4096 serve se precisares " +
                 "de RSA; é maior e mais lento, e o QR e o backup em papel passam a ser vários códigos, lidos um a um. " +
                 "Chaves RSA criadas no computador importam-se aqui e funcionam da mesma maneira.\n" +
@@ -1329,6 +1426,15 @@ class MainActivity : Activity() {
                 },
                 button("Prolongar validade") { extend(k.ring) },
             ))
+            if (quick.has(info.fingerprint)) {
+                c.addView(label("✔ Palavra-passe com impressão digital (ou o PIN do telemóvel)."))
+                c.addView(button("Voltar a escrever a palavra-passe") {
+                    quick.forget(info.fingerprint)
+                    refresh()
+                })
+            } else {
+                c.addView(button("Usar a impressão digital em vez da palavra-passe…") { enableQuick(info) })
+            }
             c.addView(buttonRow(
                 button("Backup da privada…") { backup(info.fingerprint) },
                 button("Backup em papel…") { paperBackup(info) },
@@ -1425,7 +1531,7 @@ class MainActivity : Activity() {
         }
 
         private fun extend(key: PGPSecretKeyRing) {
-            askPassphrase("Prolongar validade", "A chave fica válida por mais 2 anos a partir de hoje.") { chars ->
+            keyPassphrase("Prolongar validade", "A chave fica válida por mais 2 anos a partir de hoje.", Pgp.fingerprint(key)) { chars ->
                 change("A atualizar…", {
                     try { vault.addMyKey(Pgp.extendExpiry(key, chars)) } finally { chars.fill('\u0000') }
                 }) {
@@ -1439,7 +1545,7 @@ class MainActivity : Activity() {
                 "Apagar chave",
                 "Vais apagar a chave PRIVADA de ${info.userId}. Sem backup, deixas de conseguir ler as mensagens enviadas para ela.\n\nEscreve APAGAR para confirmar:",
                 "APAGAR",
-            ) { change("A apagar…", { vault.deleteMyKey(info.fingerprint) }) }
+            ) { change("A apagar…", { vault.deleteMyKey(info.fingerprint); quick.forget(info.fingerprint) }) }
         }
     }
 
@@ -1573,7 +1679,7 @@ class MainActivity : Activity() {
         private val formatHint = label("")
         /** Contacto cujo código secreto pode fechar a camada de fora (um só destinatário, com código). */
         private var codeFpr: String? = null
-        private val useCode = CheckBox(this@MainActivity).apply { isChecked = prefs.getBoolean(PREF_USE_CODE, true) }
+        private val useCode = CheckBox(this@MainActivity).apply { isChecked = prefs.getBoolean(PREF_USE_CODE, false) }
         private val output = textArea("", 5, mono = true).apply { keyListener = null; setTextIsSelectable(true) }
         private val outTitle = heading("Mensagem encriptada")
         private val outBox = column(0)
@@ -1590,7 +1696,9 @@ class MainActivity : Activity() {
                 "código (curto, parece um token), palavras (soltas, comprido) ou poema (versos em quadras, o mais comprido e o que menos chama a atenção).\n" +
                 "• Modo compacto: a mensagem fica com cerca de metade do tamanho, o que encurta muito o poema. Em troca não leva a tua assinatura " +
                 "(o destinatário não confirma que é tua) e não fica encriptada para ti (não a consegues reler depois).\n" +
-                "• Código secreto: aparece com um formato disfarçado e um só destinatário com quem combinaste um código.\n" +
+                "• Código secreto: opção desligada por omissão. Só aparece com um formato disfarçado e um só destinatário com quem combinaste " +
+                "um código; marca-a quando a quiseres usar (fica lembrada para esse contacto).\n" +
+                "• Palavra-passe: se a ligaste à impressão digital (separador Chaves), basta o dedo ou o PIN do telemóvel.\n" +
                 "• Só assinar: o texto NÃO fica secreto, só leva a tua assinatura.\n" +
                 "• Ficheiros e fotografias: usa os destinatários escolhidos acima e guarda um ficheiro .pgp."
 
@@ -1663,7 +1771,7 @@ class MainActivity : Activity() {
         fun replyTo(fingerprint: String) {
             // O formato e a opção do código secreto usados da última vez com este contacto.
             prefs.getInt(PREF_CONTACT_FORMAT + fingerprint, -1).takeIf { it in FORMATS.indices }?.let { format.setSelection(it) }
-            if (prefs.contains(PREF_CONTACT_CODE + fingerprint)) useCode.isChecked = prefs.getBoolean(PREF_CONTACT_CODE + fingerprint, true)
+            useCode.isChecked = prefs.getBoolean(PREF_CONTACT_CODE + fingerprint, false)
             preselect = setOf(fingerprint)
             draft.setText("")
             output.setText("")
@@ -1740,7 +1848,7 @@ class MainActivity : Activity() {
                     try { formatted(vault.encrypt(text, to, me!!, chars != null, chars, toSelf = !small), fmt, code) } finally { chars?.fill('\u0000') }
                 }) { showOutput(if (small) "Mensagem encriptada (compacta: não a consegues reler)" else "Mensagem encriptada", it) }
             }
-            if (sign.isChecked && !small) askPassphrase("Assinar", "Palavra-passe da tua chave:") { run(it) } else run(null)
+            if (sign.isChecked && !small) keyPassphrase("Assinar", "Palavra-passe da tua chave:", me) { run(it) } else run(null)
         }
 
         private fun showOutput(title: String, text: String) {
@@ -1765,9 +1873,10 @@ class MainActivity : Activity() {
             val text = draft.text.toString()
             if (text.isBlank()) return alert("Assinar", "Escreve primeiro o texto.")
             val me = myKey() ?: return
-            askPassphrase(
+            keyPassphrase(
                 "Só assinar",
                 "O texto NÃO fica encriptado: qualquer pessoa o consegue ler. A assinatura só prova que é teu.\n\nPalavra-passe da tua chave:",
+                me,
             ) { chars ->
                 work("A assinar…", { try { vault.sign(text, me, chars) } finally { chars.fill('\u0000') } }) {
                     showOutput("Texto assinado (não está encriptado)", it)
@@ -1807,7 +1916,7 @@ class MainActivity : Activity() {
             }
             if (signed) {
                 // Se desistires aqui, o ficheiro de destino (ainda vazio) é apagado.
-                askPassphrase("Assinar o ficheiro", "Palavra-passe da tua chave:", onCancel = { work("…", { deleteDocument(out) }) {} }) { run(it) }
+                keyPassphrase("Assinar o ficheiro", "Palavra-passe da tua chave:", me, onCancel = { work("…", { deleteDocument(out) }) {} }) { run(it) }
             } else {
                 run(null)
             }
@@ -1901,7 +2010,7 @@ class MainActivity : Activity() {
             if (Pgp.isSignedText(msg)) return work("A verificar a assinatura…", { vault.verify(msg) }) { showResult(it, signedOnly = true) }
             work("A verificar…", { vault.isForMe(msg) }) { forMe ->
                 if (!forMe) return@work alert("Desencriptar", "Esta mensagem não foi encriptada para nenhuma das tuas chaves.")
-                askPassphrase("Desencriptar", "Palavra-passe da tua chave:") { chars ->
+                keyPassphrase("Desencriptar", "Palavra-passe da tua chave:") { chars ->
                     work("A desencriptar…", {
                         try { vault.decrypt(msg, chars) } finally { chars.fill('\u0000') }
                     }) { showResult(it) }
@@ -1911,7 +2020,7 @@ class MainActivity : Activity() {
 
         /** Desencripta um ficheiro já escolhido para o destino já escolhido. */
         fun decryptFile(input: Uri, out: Uri) {
-            askPassphrase("Desencriptar ficheiro", "Palavra-passe da tua chave:", onCancel = { work("…", { deleteDocument(out) }) {} }) { chars ->
+            keyPassphrase("Desencriptar ficheiro", "Palavra-passe da tua chave:", onCancel = { work("…", { deleteDocument(out) }) {} }) { chars ->
                 work("A desencriptar o ficheiro…", {
                     try {
                         // Se falhar (ficheiro alterado, palavra-passe errada...), o que já foi escrito é apagado.
@@ -2065,7 +2174,8 @@ class MainActivity : Activity() {
             lockBox.removeAllViews()
             lockBox.addView(label(
                 "O bloqueio trava quem pegar no telemóvel desbloqueado: pede-se ao abrir a app e depois de 1 minuto fora dela. " +
-                    "A palavra-passe da chave continua a ser pedida para assinar e desencriptar."
+                    "A palavra-passe da chave continua a ser pedida para assinar e desencriptar; para a trocar pela impressão digital, " +
+                    "usa \"Usar a impressão digital em vez da palavra-passe\" no separador Chaves."
             ))
             lockBox.addView(CheckBox(this@MainActivity).apply {
                 text = "Desbloquear com a impressão digital (ou o bloqueio do telemóvel)"
@@ -2190,7 +2300,7 @@ class MainActivity : Activity() {
         }
 
         private fun open(n: Note) {
-            askPassphrase("Abrir nota", "Palavra-passe da tua chave:") { chars ->
+            keyPassphrase("Abrir nota", "Palavra-passe da tua chave:") { chars ->
                 work("A abrir…", { try { vault.readNote(n.id, chars) } finally { chars.fill('\u0000') } }) { text ->
                     editing = n.id
                     editorTitle.text = "A editar: ${n.label}"

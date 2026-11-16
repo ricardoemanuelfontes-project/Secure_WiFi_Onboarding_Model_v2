@@ -73,7 +73,23 @@ No separador ⚙:
 O bloqueio é uma porta, não uma cifra: trava quem pega no telemóvel desbloqueado. A chave do
 Keystore não fica presa à impressão digital, de propósito: o Android destrói chaves dessas quando
 se tira o bloqueio de ecrã, e o cofre perdia-se. As chaves privadas continuam protegidas pela
-palavra-passe OpenPGP, que é sempre pedida.
+palavra-passe OpenPGP.
+
+## Palavra-passe com impressão digital (opcional)
+
+Em Chaves, cada chave tem "Usar a impressão digital em vez da palavra-passe" (Android 11 ou mais
+recente, com bloqueio de ecrã). Escreve-se a palavra-passe uma última vez; depois, para assinar,
+desencriptar, abrir notas e prolongar a validade basta a impressão digital ou o PIN/padrão do
+telemóvel. Também aparece como opção ("Da próxima vez, usar a impressão digital") na janela que
+pede a palavra-passe.
+
+A palavra-passe fica cifrada (AES-256-GCM) com uma chave do Keystore que exige a confirmação do
+dono em cada utilização (impressão digital de classe forte ou o bloqueio do telemóvel), e só com o
+telemóvel desbloqueado. Se se juntar uma impressão digital nova ou se tirar o bloqueio de ecrã, o
+Android invalida essa chave: a palavra-passe guardada deixa de servir e escreve-se de novo. Perder
+isto não faz perder nada (as chaves continuam no cofre). O PIN de pânico apaga-a também. Não usa o
+PIN da app, de propósito: um PIN de 4 algarismos protegeria a palavra-passe muito menos do que o
+chip de segurança do telemóvel.
 
 ## Modo disfarçado
 
@@ -100,7 +116,8 @@ ao colar, importar ou receber por partilha.
 Em Contactos, num contacto verificado, podes combinar um **código secreto**: uma frase que os dois
 escrevem, cada um na sua app (combinada em pessoa ou por chamada). A app mostra seis algarismos de
 confirmação, que têm de ser iguais nos dois telemóveis. Depois, em Encriptar, com um formato
-disfarçado e só esse destinatário, aparece a opção "Fechar com o código secreto".
+disfarçado e só esse destinatário, aparece a opção "Fechar com o código secreto", desligada por
+omissão: marca-se quando se quer usar, e a escolha fica lembrada para esse contacto.
 
 Com o código, a camada de fora passa a ser uma segunda cifra a sério (AES-256 com chave derivada da
 frase por scrypt): sem a frase, nem com a app se consegue ver que por baixo está PGP. Fica guardada
