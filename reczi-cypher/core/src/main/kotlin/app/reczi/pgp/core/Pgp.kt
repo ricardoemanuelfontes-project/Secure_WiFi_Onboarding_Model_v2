@@ -29,6 +29,7 @@ import org.pgpainless.key.generation.type.xdh_legacy.XDHLegacySpec
 import org.pgpainless.key.protection.KeyRingProtectionSettings
 import org.pgpainless.key.protection.SecretKeyRingProtector
 import org.pgpainless.key.protection.UnlockSecretKey
+import org.pgpainless.key.util.RevocationAttributes
 import org.pgpainless.util.Passphrase
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -73,6 +74,11 @@ sealed interface SignatureStatus {
 data class Decrypted(val text: String, val signature: SignatureStatus)
 
 object Pgp {
+    init {
+        // Sem "Version: PGPainless" nas mensagens e assinaturas: não diz a ninguém que programa usas.
+        org.pgpainless.util.ArmoredOutputStreamFactory.setVersionInfo(null)
+    }
+
     /**
      * Proteção das chaves privadas: AES-256 com a palavra-passe derivada por SHA-512
      * iterado e com sal, no máximo de iterações do OpenPGP (65 011 712). É o mais forte
@@ -440,9 +446,13 @@ object Pgp {
         }
     }
 
-    private fun signing(signer: PGPSecretKeyRing, pp: Passphrase?, detached: Boolean): SigningOptions = try {
+    private fun signing(
+        signer: PGPSecretKeyRing, pp: Passphrase?, detached: Boolean, type: DocumentSignatureType = DocumentSignatureType.CANONICAL_TEXT_DOCUMENT,
+    ): SigningOptions = try {
+        // A biblioteca deixa assinar com uma chave revogada: aqui não.
+        if (info(signer).revoked) throw PgpError("A tua chave foi revogada: já não pode assinar. Cria uma chave nova.")
         val protector = SecretKeyRingProtector.unlockAnyKeyWith(pp ?: Passphrase.emptyPassphrase())
-        if (detached) SigningOptions.get().addDetachedSignature(protector, signer, DocumentSignatureType.CANONICAL_TEXT_DOCUMENT)
+        if (detached) SigningOptions.get().addDetachedSignature(protector, signer, type)
         else SigningOptions.get().addInlineSignature(protector, signer, DocumentSignatureType.BINARY_DOCUMENT)
     } catch (e: WrongPassphraseException) {
         throw WrongPassphraseError(e)
@@ -569,7 +579,7 @@ object Pgp {
         try {
             // Só entram as chaves que a palavra-passe abre: com várias chaves e palavras-passe
             // diferentes, uma chave que não abre faria falhar toda a desencriptação.
-            val unlocked = myKeys.filter { unlocksForMessage(it, recipients, pp) }
+            val unlocked = myKeys.map(::forDecryption).filter { unlocksForMessage(it, recipients, pp) }
             if (unlocked.isEmpty()) throw WrongPassphraseError()
 
             val options = ConsumerOptions.get()
@@ -613,7 +623,7 @@ object Pgp {
                 // Distingue "não confere" (alterada/falsa) de "confere mas a chave já não é aceite".
                 // Nos ficheiros (sem os bytes em memória) vale o estado da chave de quem assinou.
                 val keyProblem = if (plaintext != null) mathematicallyValid(sig, owner.getPublicKey(sig.keyID), plaintext)
-                else runCatching { !info(owner).canSign }.getOrDefault(false)
+                else !signingKeyAccepted(owner, sig.keyID)
                 if (keyProblem) SignatureStatus.Rejected(fingerprint(owner)) else SignatureStatus.Invalid
             }
             meta.verifiedSignatures.isNotEmpty() ->
@@ -621,6 +631,28 @@ object Pgp {
             meta.hasSignature -> SignatureStatus.UnknownSigner
             else -> SignatureStatus.None
         }
+    }
+
+    /**
+     * true se [keyId] é hoje uma subchave de assinatura válida de [owner] (chave não revogada nem
+     * expirada). Serve nos ficheiros, em que os bytes não ficam em memória: se a chave está boa e a
+     * assinatura foi recusada, o problema é o ficheiro (alterado), não a chave.
+     */
+    private fun signingKeyAccepted(owner: PGPPublicKeyRing, keyId: Long): Boolean = runCatching {
+        val i = PGPainless.inspectKeyRing(owner)
+        i.revocationState.isNotRevoked() && i.signingSubkeys.any { it.keyID == keyId }
+    }.getOrDefault(false)
+
+    /**
+     * Cópia da tua chave só para desencriptar, sem a revogação da chave inteira: revogar serve para
+     * os outros deixarem de encriptar para ti, não para perderes o acesso ao que já recebeste.
+     */
+    private fun forDecryption(key: PGPSecretKeyRing): PGPSecretKeyRing {
+        val revocations = key.publicKey.getSignaturesOfType(PGPSignature.KEY_REVOCATION).asSequence().toList()
+        if (revocations.isEmpty()) return key
+        var primary = key.publicKey
+        revocations.forEach { primary = PGPPublicKey.removeCertification(primary, it) ?: primary }
+        return withPrimary(key, primary)
     }
 
     /** Verifica só a matemática da assinatura sobre o texto (sem regras de validade da chave). */
@@ -709,6 +741,131 @@ object Pgp {
             throw PgpError("Não foi possível prolongar a validade desta chave.", e)
         } finally {
             pp.clear()
+        }
+    }
+
+    // ------------------------------------------------------------------ palavra-passe e revogação
+
+    /** Troca a palavra-passe de uma chave tua (confirma primeiro a atual). */
+    fun changePassphrase(key: PGPSecretKeyRing, old: CharArray, new: CharArray): PGPSecretKeyRing {
+        checkNewPassphrase(new)
+        if (!checkPassphrase(key, old)) throw WrongPassphraseError()
+        return try {
+            protect(key, Passphrase(old.copyOf()), new)
+        } catch (e: Exception) {
+            throw PgpError("Não foi possível mudar a palavra-passe desta chave.", e)
+        }
+    }
+
+    enum class RevokeReason(val reason: RevocationAttributes.Reason) {
+        /** Alguém pode ter a chave (telemóvel perdido, palavra-passe vista...). */
+        Compromised(RevocationAttributes.Reason.KEY_COMPROMISED),
+        /** Substituída por uma chave nova. */
+        Superseded(RevocationAttributes.Reason.KEY_SUPERSEDED),
+        /** Deixou de ser usada. */
+        Retired(RevocationAttributes.Reason.KEY_RETIRED),
+        /** Feito por precaução, sem motivo (certificado guardado para um dia). */
+        Unspecified(RevocationAttributes.Reason.NO_REASON),
+    }
+
+    /** Assinatura de revogação da chave inteira. */
+    private fun revocation(key: PGPSecretKeyRing, passphrase: CharArray, reason: RevokeReason): PGPSignature {
+        val pp = Passphrase(passphrase.copyOf())
+        try {
+            val protector = SecretKeyRingProtector.unlockAnyKeyWith(pp)
+            val attrs = RevocationAttributes.createKeyRevocation().withReason(reason.reason).withoutDescription()
+            return PGPainless.modifyKeyRing(key).createRevocation(protector, attrs)
+        } catch (e: WrongPassphraseException) {
+            throw WrongPassphraseError(e)
+        } catch (e: Exception) {
+            throw PgpError("Não foi possível criar a revogação desta chave.", e)
+        } finally {
+            pp.clear()
+        }
+    }
+
+    /**
+     * Certificado de revogação: a tua chave pública já com a revogação lá dentro. Guarda-se à parte
+     * (com o backup) e, se um dia perderes a chave ou a palavra-passe, envia-se aos contactos: ao
+     * importarem, a chave fica revogada (no Reczi cypher, no GnuPG e noutros programas).
+     * Não revoga nada enquanto não for enviado.
+     */
+    fun revocationCertificate(key: PGPSecretKeyRing, passphrase: CharArray, reason: RevokeReason = RevokeReason.Unspecified): String {
+        val sig = revocation(key, passphrase, reason)
+        val cert = certificateOf(key)
+        val primary = PGPPublicKey.addCertification(cert.publicKey, sig)
+        return armor(PGPPublicKeyRing.insertPublicKey(cert, primary))
+    }
+
+    /** Revoga a tua chave de vez (devolve a chave privada já revogada, para guardar no cofre). */
+    fun revoke(key: PGPSecretKeyRing, passphrase: CharArray, reason: RevokeReason): PGPSecretKeyRing {
+        val sig = revocation(key, passphrase, reason)
+        return withPrimary(key, PGPPublicKey.addCertification(key.publicKey, sig))
+    }
+
+    /** A mesma chave privada com a parte pública da primária trocada (as subchaves ficam). */
+    private fun withPrimary(key: PGPSecretKeyRing, primary: PGPPublicKey): PGPSecretKeyRing =
+        PGPSecretKeyRing.insertSecretKey(key, org.bouncycastle.openpgp.PGPSecretKey.replacePublicKey(key.secretKey, primary))
+
+    // ------------------------------------------------------------------ assinaturas destacadas (.sig/.asc)
+
+    /**
+     * Assina um ficheiro sem lhe tocar: devolve a assinatura à parte (texto ASCII, para guardar como
+     * "<ficheiro>.asc" ao lado do original). É o que se pede para provar a autoria de um anexo.
+     */
+    fun signDetached(input: InputStream, signer: PGPSecretKeyRing, passphrase: CharArray): String {
+        val pp = Passphrase(passphrase.copyOf())
+        try {
+            val options = ProducerOptions.sign(signing(signer, pp, detached = true, type = DocumentSignatureType.BINARY_DOCUMENT))
+                .setAsciiArmor(false)
+            val stream = PGPainless.encryptAndOrSign().onOutputStream(OutputStream.nullOutputStream()).withOptions(options)
+            stream.use { input.copyTo(it, 64 * 1024) }
+            val sigs = stream.result.detachedSignatures.values().flatten()
+            if (sigs.isEmpty()) throw PgpError("Não foi possível assinar o ficheiro.")
+            val out = ByteArrayOutputStream()
+            ArmoredOutputStream.builder().clearHeaders().build(out).use { a -> sigs.forEach { a.write(it.encoded) } }
+            return out.toString(Charsets.US_ASCII.name())
+        } catch (e: PgpError) {
+            throw e
+        } catch (e: Exception) {
+            throw PgpError("Não foi possível assinar o ficheiro.", e)
+        } finally {
+            pp.clear()
+        }
+    }
+
+    /** Verifica um ficheiro com a sua assinatura à parte (.sig binária ou .asc). */
+    fun verifyDetached(open: () -> InputStream, signature: ByteArray, verificationCerts: List<PGPPublicKeyRing>): SignatureStatus {
+        val sigs = try {
+            val decoded = org.bouncycastle.openpgp.PGPUtil.getDecoderStream(signature.inputStream()).use { it.readBytes() }
+            val list = mutableListOf<PGPSignature>()
+            val factory = org.bouncycastle.openpgp.bc.BcPGPObjectFactory(decoded)
+            while (true) {
+                when (val o = factory.nextObject() ?: break) {
+                    is org.bouncycastle.openpgp.PGPSignatureList -> o.forEach { list += it }
+                    else -> throw PgpError("O ficheiro de assinatura não contém só assinaturas.")
+                }
+            }
+            list
+        } catch (e: PgpError) {
+            throw e
+        } catch (e: Exception) {
+            throw PgpError("Não reconheço isto como uma assinatura PGP (.sig ou .asc).", e)
+        }
+        if (sigs.isEmpty()) throw PgpError("Não reconheço isto como uma assinatura PGP (.sig ou .asc).")
+        try {
+            val certs = dedupe(verificationCerts)
+            val options = ConsumerOptions.get().addVerificationOfDetachedSignatures(sigs)
+            certs.forEach { options.addVerificationCert(it) }
+            val stream = open().use { input ->
+                val s = PGPainless.decryptAndOrVerify().onInputStream(input).withOptions(options)
+                s.use { it.copyTo(OutputStream.nullOutputStream(), 64 * 1024) }
+                s
+            }
+            val status = signatureStatus(stream.metadata, certs, null)
+            return if (status == SignatureStatus.None) SignatureStatus.UnknownSigner else status
+        } catch (e: Exception) {
+            throw PgpError("Não foi possível ler o ficheiro para o verificar.", e)
         }
     }
 

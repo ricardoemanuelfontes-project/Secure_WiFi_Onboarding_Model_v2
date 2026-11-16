@@ -430,6 +430,50 @@ class Vault(private val store: Store) {
         return result(d.text, d.signature, snap, null)
     }
 
+    /** Assina um ficheiro e devolve a assinatura à parte, em texto (ver [Pgp.signDetached]). */
+    fun signDetached(input: java.io.InputStream, myFpr: String, passphrase: CharArray): String =
+        Pgp.signDetached(input, myKey(myFpr), passphrase)
+
+    /** Verifica um ficheiro com a assinatura à parte e diz de quem é. */
+    fun verifyDetached(open: () -> java.io.InputStream, signature: ByteArray): DecryptResult {
+        val snap = snapshot()
+        return result("", Pgp.verifyDetached(open, signature, trustOrder(snap)), snap, null)
+    }
+
+    // ------------------------------------------------------------------ gerir as tuas chaves
+
+    /** Muda a palavra-passe de uma chave tua. */
+    @Synchronized
+    fun changePassphrase(fingerprint: String, old: CharArray, new: CharArray) {
+        save(SEC + fingerprint, Pgp.changePassphrase(myKey(fingerprint), old, new).encoded)
+    }
+
+    /** Certificado de revogação de uma chave tua, para guardar à parte (não revoga nada sozinho). */
+    fun revocationCertificate(fingerprint: String, passphrase: CharArray): String =
+        Pgp.revocationCertificate(myKey(fingerprint), passphrase)
+
+    /** Revoga uma chave tua de vez. Devolve a chave pública revogada, para enviar aos contactos. */
+    @Synchronized
+    fun revoke(fingerprint: String, passphrase: CharArray, reason: Pgp.RevokeReason): String {
+        val revoked = Pgp.revoke(myKey(fingerprint), passphrase, reason)
+        save(SEC + fingerprint, revoked.encoded)
+        return Pgp.armor(Pgp.certificateOf(revoked))
+    }
+
+    /**
+     * As tuas chaves (impressões digitais) para as quais a mensagem foi encriptada, pela ordem das
+     * tuas chaves. Com destinatário oculto, são todas.
+     */
+    fun myKeysFor(text: String): List<String> = myKeysFor(Pgp.recipientKeyIds(normalize(text).armored))
+
+    fun myKeysForFile(input: java.io.InputStream): List<String> = myKeysFor(Pgp.recipientKeyIds(input))
+
+    private fun myKeysFor(ids: List<Long>): List<String> {
+        val mine = snapshot().myKeys
+        if (0L in ids) return mine.map { it.info.fingerprint }
+        return mine.filter { k -> Pgp.keyIds(k.ring).any { it in ids } }.map { it.info.fingerprint }
+    }
+
     /** Esquece o que estava em memória (depois de começar um cofre novo). */
     @Synchronized
     fun clearCache() = cache.clear()
