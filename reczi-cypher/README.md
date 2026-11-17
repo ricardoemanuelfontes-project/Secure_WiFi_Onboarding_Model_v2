@@ -64,6 +64,13 @@ outro telemóvel, sem apagar nem substituir o que lá estiver. Os PINs da app n�
 O ficheiro é cifrado com AES-256-GCM, com a chave derivada da palavra-passe do backup por scrypt.
 As chaves privadas lá dentro continuam protegidas pela sua própria palavra-passe.
 
+**Importar qualquer backup pela mesma porta** (1.4.1): em ☰ > As minhas chaves > Importar (ou em
+Restaurar) a app reconhece sozinha o que escolheste e leva-o ao sítio certo: a chave de um
+"Backup…" (`.asc`), o backup completo (`.rczbak`), um backup protegido com palavra-passe ou código
+(como o do OpenKeychain, `.sec.pgp`, ou um ficheiro de `gpg --symmetric`; o código pode ser escrito
+com ou sem hífenes) ou uma chave exportada de outro programa (GnuPG, Kleopatra, Proton…). As chaves
+públicas de contactos que venham num backup do OpenKeychain são importadas a seguir.
+
 ## Ajuda dentro da app
 
 - **Bem-vindo**: na primeira abertura sem chaves, uma explicação curta de como funciona.

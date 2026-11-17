@@ -140,7 +140,7 @@ object Pgp {
     /** Lê uma ou mais chaves públicas (texto ASCII-armor ou binário). */
     fun parseCertificates(data: ByteArray): List<PGPPublicKeyRing> {
         if (String(data, Charsets.ISO_8859_1).contains("PRIVATE KEY BLOCK")) {
-            throw PgpError("Isto é uma chave PRIVADA. Importa-a no separador \"Chaves\".")
+            throw PgpError("Isto é uma chave PRIVADA. Importa-a em ☰ > As minhas chaves > Importar.")
         }
         val certs = try {
             PGPainless.readKeyRing().publicKeyRingCollection(data).keyRings.asSequence().toList()
@@ -151,15 +151,102 @@ object Pgp {
         return certs
     }
 
-    /** Lê uma ou mais chaves privadas. */
+    /**
+     * Lê uma ou mais chaves privadas. Aceita também ficheiros com chaves privadas e públicas
+     * misturadas (p. ex. o conteúdo de um backup do OpenKeychain): ficam só as privadas.
+     */
     fun parseSecretKeys(data: ByteArray): List<PGPSecretKeyRing> {
         val keys = try {
             PGPainless.readKeyRing().secretKeyRingCollection(data).keyRings.asSequence().toList()
         } catch (e: Exception) {
-            throw PgpError("Não reconheço isto como uma chave privada.", e)
+            runCatching { PGPainless.readKeyRing().keyRingCollection(data, true).pgpSecretKeyRingCollection.keyRings.asSequence().toList() }
+                .getOrNull()?.takeIf { it.isNotEmpty() }
+                ?: throw PgpError(
+                    "Não reconheço isto como uma chave privada. Serve: o ficheiro .asc do \"Backup…\" de uma chave, o backup completo " +
+                        "(.rczbak), um backup protegido com palavra-passe ou código (p. ex. do OpenKeychain), ou uma chave privada " +
+                        "exportada de outro programa (GnuPG, Kleopatra, Proton…).",
+                    e,
+                )
         }
         if (keys.isEmpty()) throw PgpError("Não encontrei nenhuma chave privada.")
         return keys
+    }
+
+    /**
+     * As chaves públicas de [data] que não são a parte pública de uma chave privada do mesmo
+     * ficheiro (os contactos que vêm num backup), em texto ASCII-armor; vazio se não houver.
+     */
+    fun otherCertificates(data: ByteArray): ByteArray {
+        val all = runCatching { PGPainless.readKeyRing().keyRingCollection(data, true) }.getOrNull() ?: return ByteArray(0)
+        val mine = all.pgpSecretKeyRingCollection.keyRings.asSequence().map { fingerprint(it) }.toSet()
+        val others = all.pgpPublicKeyRingCollection.keyRings.asSequence().filter { fingerprint(it) !in mine }.toList()
+        return if (others.isEmpty()) ByteArray(0) else others.joinToString("\n") { armor(it) }.toByteArray()
+    }
+
+    /**
+     * true se [data] é uma mensagem OpenPGP encriptada só com palavra-passe, sem destinatários:
+     * p. ex. o backup do OpenKeychain (com o código de backup) ou um ficheiro de "gpg --symmetric".
+     */
+    fun isPasswordEncrypted(data: ByteArray): Boolean = try {
+        val factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(org.bouncycastle.openpgp.PGPUtil.getDecoderStream(data.inputStream()))
+        var obj = factory.nextObject()
+        while (obj is org.bouncycastle.openpgp.PGPMarker) obj = factory.nextObject()
+        val list = (obj as? org.bouncycastle.openpgp.PGPEncryptedDataList)?.encryptedDataObjects?.asSequence()?.toList().orEmpty()
+        list.isNotEmpty() && list.all { it is org.bouncycastle.openpgp.PGPPBEEncryptedData }
+    } catch (e: Exception) {
+        false
+    }
+
+    /**
+     * Abre um backup encriptado com palavra-passe ([isPasswordEncrypted]) e devolve o que tem
+     * dentro. Os códigos de backup escrevem-se de várias maneiras ("1234-5678-…", com espaços, sem
+     * hífenes), por isso tenta também essas variantes do que foi escrito.
+     */
+    fun openPasswordBackup(data: ByteArray, passphrase: CharArray, limit: Int = 16 shl 20): ByteArray {
+        val typed = String(passphrase)
+        val compact = typed.filter { it.isLetterOrDigit() }
+        val variants = listOf(typed, typed.trim(), compact.chunked(4).joinToString("-"), compact, compact.uppercase().chunked(4).joinToString("-"))
+            .filter { it.isNotEmpty() }.distinct()
+        for (v in variants) {
+            val pp = Passphrase(v.toCharArray())
+            try {
+                val out = ByteArrayOutputStream()
+                PGPainless.decryptAndOrVerify().onInputStream(data.inputStream())
+                    .withOptions(ConsumerOptions.get().addMessagePassphrase(pp))
+                    .use { input ->
+                        val buf = ByteArray(8192)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            if (out.size() > limit) throw PgpError("O conteúdo deste backup é demasiado grande.")
+                        }
+                    }
+                return out.toByteArray()
+            } catch (e: PgpError) {
+                throw e
+            } catch (e: MissingDecryptionMethodException) {
+                // Esta maneira de escrever não abre; tenta a seguinte.
+            } catch (e: org.bouncycastle.openpgp.PGPException) {
+                // Idem (com algumas palavras-passe erradas o BouncyCastle falha assim).
+            } catch (e: Exception) {
+                throw PgpError("Não consegui abrir este backup (danificado ou incompleto?).", e)
+            } finally {
+                pp.clear()
+            }
+        }
+        throw WrongPassphraseError()
+    }
+
+    /** O que um ficheiro escolhido para importar parece ser (para o levar ao sítio certo). */
+    enum class ImportKind { FullBackup, PasswordBackup, PrivateKeys, PublicKeys, Unknown }
+
+    fun importKind(data: ByteArray): ImportKind = when {
+        Backup.isBackup(data) -> ImportKind.FullBackup
+        isPasswordEncrypted(data) -> ImportKind.PasswordBackup
+        runCatching { parseSecretKeys(data) }.isSuccess -> ImportKind.PrivateKeys
+        runCatching { parseCertificates(data) }.isSuccess -> ImportKind.PublicKeys
+        else -> ImportKind.Unknown
     }
 
     /**

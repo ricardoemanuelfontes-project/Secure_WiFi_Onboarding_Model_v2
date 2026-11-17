@@ -53,6 +53,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import app.reczi.pgp.core.Backup
 import app.reczi.pgp.core.BrokenEntry
 import app.reczi.pgp.core.Contact
 import app.reczi.pgp.core.DecryptResult
@@ -453,7 +454,7 @@ class MainActivity : Activity() {
         if (prefs.getBoolean(PREF_WELCOMED, false)) return
         prefs.edit().putBoolean(PREF_WELCOMED, true).apply()
         if (s.myKeys.isNotEmpty()) return // já usavas a app: não precisas da apresentação
-        alert("Bem-vindo ao Reczi cypher", "$HOW_IT_WORKS\n\nEm ☰ > As minhas chaves tens os primeiros passos, por ordem. O bloqueio da app está em ☰ > Definições. Em cada ecrã há um botão \"? Ajuda\".")
+        alert("Bem-vindo ao Reczi cypher", "$HOW_IT_WORKS\n\nEm ☰ > As minhas chaves tens os primeiros passos, por ordem. O bloqueio da app está em ☰ > Definições. Em cada ecrã há um botão \"? Ajuda\".\n\nJá tinhas chaves (nesta app ou noutro programa)? Importa a chave ou o backup em ☰ > As minhas chaves > Importar.")
     }
 
     /** Chaves privadas de que há registo de backup (ficheiro, papel, ou importadas de um backup). */
@@ -991,7 +992,7 @@ class MainActivity : Activity() {
                 KIND_SIGN_FILE -> signing.signFile(uri)
                 KIND_VERIFY_DATA -> signing.verifyPickSignature(uri)
                 KIND_VERIFY_SIG -> signing.verifyFile(uri)
-                else -> work("A ler o ficheiro…", { readUri(uri) }) { bytes ->
+                else -> work("A ler o ficheiro…", { readUri(uri, if (kind == KIND_PRIVATE) MAX_BACKUP else MAX_FILE) }) { bytes ->
                     when (kind) {
                         KIND_PRIVATE -> keys.importPrivate(bytes)
                         KIND_PUBLIC -> contacts.importPublic(bytes)
@@ -1068,6 +1069,8 @@ class MainActivity : Activity() {
     }
 
     private fun restoreAll(bytes: ByteArray) {
+        // Um ficheiro de uma só chave (.asc) ou um backup de outra app, escolhido em Restaurar: importa-se na mesma.
+        if (!Backup.isBackup(bytes)) return keys.importPrivate(bytes)
         askPassphrase("Restaurar backup completo", "Palavra-passe que deste a este backup:") { chars ->
             change("A restaurar…", { try { vault.importBackup(bytes, chars) } finally { chars.fill('\u0000') } }) { r ->
                 snap.myKeys.forEach { markBackedUp(it.info.fingerprint) }
@@ -1487,7 +1490,11 @@ class MainActivity : Activity() {
             col.addView(keyType)
             col.addView(guard(primaryButton("Criar chave") { create() }))
             col.addView(heading("Importar a tua chave privada"))
-            col.addView(label("Por exemplo, o ficheiro criado no computador com \"cofre backup\"."))
+            col.addView(label(
+                "Serve o ficheiro .asc do \"Backup…\" de uma chave, o backup completo (.rczbak), um backup com código " +
+                    "(p. ex. do OpenKeychain) ou uma chave exportada de outro programa (GnuPG, Kleopatra, Proton…). " +
+                    "A app reconhece o tipo sozinha."
+            ))
             col.addView(buttonRow(
                 button("De ficheiro…") { openFile(KIND_PRIVATE) },
                 button("Colar") {
@@ -1736,8 +1743,18 @@ class MainActivity : Activity() {
             }
         }
 
-        fun importPrivate(data: ByteArray, fromClipboard: Boolean = false) {
+        /**
+         * Importa chaves privadas. Também aceita, pela mesma porta, o backup completo (.rczbak) e
+         * os backups protegidos com palavra-passe ou código (p. ex. do OpenKeychain): cada um vai
+         * para o sítio certo. [then] corre depois da última chave importada.
+         */
+        fun importPrivate(data: ByteArray, fromClipboard: Boolean = false, then: () -> Unit = {}) {
             if (data.isEmpty()) return
+            if (Backup.isBackup(data)) return restoreAll(data)
+            if (Pgp.isPasswordEncrypted(data)) {
+                if (fromClipboard) clearClipboard()
+                return importPasswordBackup(data)
+            }
             work("A ler a chave…", {
                 Pgp.parseSecretKeys(data).map { ring -> ring to runCatching { Pgp.info(ring) } }
             }) { keys ->
@@ -1746,13 +1763,30 @@ class MainActivity : Activity() {
                 val bad = keys.filter { it.second.isFailure }.map { (ring, info) ->
                     "${Pgp.fingerprint(ring).takeLast(16)}: ${(info.exceptionOrNull() as? PgpError)?.message ?: "chave inválida"}"
                 }
-                val go = { importNext(ok.toMutableList()) }
+                val go = { importNext(ok.toMutableList(), then) }
                 if (bad.isNotEmpty()) alert("Chaves ignoradas", bad.joinToString("\n"), go) else go()
             }
         }
 
-        private fun importNext(queue: MutableList<Pair<PGPSecretKeyRing, KeyInfo>>) {
-            val (key, info) = queue.removeFirstOrNull() ?: return
+        /** Backup encriptado com palavra-passe ou código: abre-o e importa o que tem dentro. */
+        private fun importPasswordBackup(data: ByteArray) {
+            askPassphrase(
+                "Backup protegido",
+                "Este ficheiro é um backup protegido por uma palavra-passe ou por um código de backup " +
+                    "(por exemplo, o do OpenKeychain, com grupos de algarismos). Escreve-o; os hífenes e espaços tanto faz.",
+            ) { chars ->
+                work("A abrir o backup…", {
+                    try { Pgp.openPasswordBackup(data, chars) } finally { chars.fill('\u0000') }
+                }) { inside ->
+                    // As chaves públicas de contactos que vierem no backup importam-se no fim.
+                    val others = Pgp.otherCertificates(inside)
+                    importPrivate(inside) { if (others.isNotEmpty()) contacts.importPublic(others) }
+                }
+            }
+        }
+
+        private fun importNext(queue: MutableList<Pair<PGPSecretKeyRing, KeyInfo>>, then: () -> Unit = {}) {
+            val (key, info) = queue.removeFirstOrNull() ?: return then()
             val prot = Pgp.isProtected(key)
             askPassphrase(
                 "Importar chave",
@@ -1764,7 +1798,7 @@ class MainActivity : Activity() {
                     try { vault.addMyKey(Pgp.prepareImported(key, chars)) } finally { chars.fill('\u0000') }
                 }) {
                     markBackedUp(info.fingerprint) // veio de um backup: já existe fora do telemóvel
-                    alert("Chave importada", "${info.userId}\n${Pgp.prettyFingerprint(info.fingerprint)}") { importNext(queue) }
+                    alert("Chave importada", "${info.userId}\n${Pgp.prettyFingerprint(info.fingerprint)}") { importNext(queue, then) }
                 }
             }
         }
