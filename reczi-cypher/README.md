@@ -289,6 +289,9 @@ ainda não teve uma auditoria independente.
   estragados ou ao acaso passam por tudo o que lê coisas vindas de fora, e só se aceita a resposta
   "não é válido", sem exceções inesperadas nem demoras (o texto colado pode ser um livro inteiro).
 - `app/`: a interface Android (só a framework, sem AndroidX) e o armazenamento no Keystore.
+  Um ficheiro por separador (`KeysScreen.kt`, `EncryptScreen.kt`, `DecryptScreen.kt`…); o
+  `MainActivity.kt` só tem o que é comum: o bloqueio e o PIN de pânico, os diálogos, os ficheiros
+  e os QR. As ajudas de interface estão em `Ui.kt` e o armazenamento cifrado em `KeystoreStore.kt`.
   Tem testes da interface (Robolectric, correm no computador sem telemóvel): criar chave,
   encriptar para ti e ler, assinar e verificar, o menu e os submenus das chaves, o cofre (nomes
   dos ficheiros, passagem dos cofres antigos, ficheiros estragados) e a acessibilidade. Só os testes usam
