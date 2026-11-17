@@ -136,6 +136,42 @@ class GnuPgInteropTest {
         assertTrue(r.signerVerified)
     }
 
+    /** Destinatários escondidos (ids a zeros): o GnuPG experimenta as chaves que tem, nos dois sentidos. */
+    @Test
+    fun hiddenRecipientsBothWays() {
+        assertEquals(0, gpg("--quick-generate-key", "Gpg User <gpg@exemplo.pt>", "default", "default", "2y", pass = gpgPass).rc)
+        val gFpr = gpgFingerprint()
+        val app = Vault(MemoryStore())
+        val mine = Pgp.generate("App User", "app@exemplo.pt", appPass)
+        app.addMyKey(mine)
+        val aFpr = Pgp.fingerprint(mine)
+        assertEquals(listOf(gFpr), app.importContacts(Pgp.parseCertificates(gpg("--armor", "--export", gFpr).out)).added)
+        app.setVerified(gFpr, true)
+        assertEquals(0, gpg("--import", input = Pgp.armor(Pgp.certificateOf(mine)).toByteArray()).rc)
+        assertEquals(0, gpg("--quick-lsign-key", aFpr, pass = gpgPass).rc)
+
+        // App -> GnuPG: mensagem disfarçada; o desfazedor tira o disfarce e o GnuPG abre o que fica.
+        val text = "Escondida do telemóvel, ção"
+        val msg = app.encrypt(text, listOf(gFpr), aFpr, true, appPass, hideRecipients = true)
+        val under = Pgp.undisguise(app.disguise(msg, Disguise.Style.Lyrics2))!!
+        assertEquals(listOf(0L, 0L), Pgp.recipientKeyIds(under))
+        val d = gpg("--decrypt", input = under.toByteArray(), pass = gpgPass)
+        assertEquals(0, d.rc, d.err)
+        assertEquals(text, d.out.toString(Charsets.UTF_8))
+        assertTrue(d.status.contains("VALIDSIG") && d.status.contains(aFpr), d.status)
+        assertTrue(d.status.contains("DECRYPTION_OKAY"))
+
+        // GnuPG -> App, com --throw-keyids.
+        val back = gpg("--armor", "--encrypt", "--sign", "--throw-keyids", "--recipient", aFpr, "--local-user", gFpr,
+            input = "Resposta escondida, ção".toByteArray(), pass = gpgPass)
+        assertEquals(0, back.rc, back.err)
+        val backText = back.out.toString(Charsets.UTF_8)
+        assertTrue(Pgp.recipientKeyIds(backText).all { it == 0L })
+        val r = app.decrypt(backText, appPass)
+        assertEquals("Resposta escondida, ção", r.text)
+        assertEquals(SignatureStatus.Valid(gFpr), r.signature)
+    }
+
     @Test
     fun keysMoveBetweenAppAndGnuPg() {
         // Chave criada no GnuPG, importada na app (backup do Debian -> telemóvel).

@@ -40,7 +40,17 @@ import java.util.Date
 /** Erro com uma mensagem pronta a mostrar ao utilizador. */
 open class PgpError(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-class WrongPassphraseError(cause: Throwable? = null) : PgpError("Palavra-passe errada.", cause)
+open class WrongPassphraseError(cause: Throwable? = null, message: String = "Palavra-passe errada.") : PgpError(message, cause)
+
+/**
+ * A mensagem tem o destinatário escondido e a palavra-passe abriu uma chave tua que não é a certa
+ * (com várias chaves, a mensagem não diz para qual delas é).
+ */
+class OtherKeyError(cause: Throwable? = null) : WrongPassphraseError(
+    cause,
+    "Esta palavra-passe abriu uma das tuas chaves, mas a mensagem não é para essa. " +
+        "A mensagem não diz para qual das tuas chaves é: escreve a palavra-passe da outra chave.",
+)
 
 data class KeyInfo(
     val fingerprint: String,
@@ -476,14 +486,21 @@ object Pgp {
 
     fun keyIds(key: PGPKeyRing): Set<Long> = key.publicKeys.asSequence().map { it.keyID }.toSet()
 
+    /**
+     * Encripta (e assina, com [signer]) um texto. Com [hideRecipients], os ids das chaves dos
+     * destinatários não vão na mensagem (ficam a zeros, como o --throw-keyids do GnuPG): quem a
+     * apanhar não fica a saber para quem é nem quem a enviou, e quem a recebe experimenta as
+     * chaves que tem.
+     */
     fun encrypt(
         text: String,
         recipients: List<PGPPublicKeyRing>,
         signer: PGPSecretKeyRing?,
         passphrase: CharArray?,
+        hideRecipients: Boolean = false,
     ): String {
         val out = ByteArrayOutputStream()
-        produce(text.toByteArray(Charsets.UTF_8).inputStream(), out, recipients, signer, passphrase, armor = true, fileName = null)
+        produce(text.toByteArray(Charsets.UTF_8).inputStream(), out, recipients, signer, passphrase, armor = true, fileName = null, hideRecipients)
         return out.toString(Charsets.UTF_8.name())
     }
 
@@ -508,12 +525,13 @@ object Pgp {
         passphrase: CharArray?,
         armor: Boolean,
         fileName: String?,
+        hideRecipients: Boolean = false,
     ) {
         if (recipients.isEmpty()) throw PgpError("Escolhe pelo menos um destinatário.")
         val enc = EncryptionOptions.encryptCommunications()
         for (r in recipients) {
             try {
-                enc.addRecipient(r)
+                if (hideRecipients) enc.addHiddenRecipient(r) else enc.addRecipient(r)
             } catch (e: Exception) {
                 throw PgpError("A chave de ${info(r).userId} não pode ser usada para encriptar (expirada ou revogada?).", e)
             }
@@ -667,11 +685,13 @@ object Pgp {
     ): Decrypted {
         val recipients = open().use { recipientKeyIds(it) }.toSet()
         val pp = Passphrase(passphrase.copyOf())
+        var opened = 0
         try {
             // Só entram as chaves que a palavra-passe abre: com várias chaves e palavras-passe
             // diferentes, uma chave que não abre faria falhar toda a desencriptação.
             val unlocked = myKeys.map(::forDecryption).filter { unlocksForMessage(it, recipients, pp) }
             if (unlocked.isEmpty()) throw WrongPassphraseError()
+            opened = unlocked.size
 
             val options = ConsumerOptions.get()
                 .setMissingKeyPassphraseStrategy(MissingKeyPassphraseStrategy.THROW_EXCEPTION)
@@ -693,8 +713,9 @@ object Pgp {
         } catch (e: WrongPassphraseException) {
             throw WrongPassphraseError(e)
         } catch (e: MissingDecryptionMethodException) {
-            // Destinatário oculto: a palavra-passe abriu outra das tuas chaves, não a certa.
-            if (0L in recipients) throw WrongPassphraseError(e)
+            // Destinatário oculto: se a palavra-passe abriu só algumas das tuas chaves, a mensagem
+            // pode ser para outra; se as abriu todas, não é para nenhuma.
+            if (0L in recipients && opened < myKeys.size) throw OtherKeyError(e)
             throw PgpError("Esta mensagem não foi encriptada para nenhuma das tuas chaves.", e)
         } catch (e: OutOfMemoryError) {
             throw PgpError("A mensagem é demasiado grande para este telemóvel.")

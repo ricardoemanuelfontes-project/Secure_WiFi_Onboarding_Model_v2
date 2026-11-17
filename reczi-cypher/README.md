@@ -183,6 +183,10 @@ java -jar reczi-desfazer.jar --codigo mensagem.txt  # com código secreto (pede 
 Serve para confirmar, de fora, que o disfarce só esconde PGP normal, e para ler no computador uma
 mensagem disfarçada. Também é reprodutível: o mesmo commit dá sempre o mesmo `.jar`.
 
+Como as mensagens disfarçadas não dizem para que chave são (ver Destinatários escondidos, abaixo), o
+GnuPG escreve "anonymous recipient" e experimenta as tuas chaves secretas. A cópia de quem envia vai
+em primeiro lugar na mensagem para o GnuPG de quem recebe acertar à primeira, sem avisos.
+
 ### Código secreto por contacto (opcional)
 
 Em Contactos, num contacto verificado, podes combinar um **código secreto**: uma frase que os dois
@@ -205,7 +209,15 @@ Limites do disfarce sem código secreto, para não haver ilusões:
 - É camuflagem, não é segurança a mais: a chave do disfarce é fixa e está dentro da app, por isso
   quem tiver a app consegue ver que por baixo está PGP. O segredo da mensagem continua a depender
   só do OpenPGP.
-- Esconde que é PGP (e os ids das chaves dos destinatários), não esconde que é texto cifrado.
+- Esconde que é PGP, não esconde que é texto cifrado.
+
+**Destinatários escondidos (1.4.6).** As mensagens disfarçadas não levam os ids das chaves para que
+foram encriptadas (ficam a zeros, como com o `--throw-keyids` do GnuPG). Quem tirar o disfarce, com
+a app ou com o desfazedor, vê que é PGP mas não para quem é nem quem o enviou: a assinatura vai lá
+dentro, cifrada. Quem recebe experimenta as chaves que tem. O "PGP normal" continua com os ids,
+porque pode ir para outros programas OpenPGP. Se tiveres várias chaves e a palavra-passe (ou a
+impressão digital) abrir a errada, a app diz-te e pede a da outra. As versões anteriores da app já
+abriam mensagens assim.
 
 ## Segurança
 
@@ -268,6 +280,8 @@ ainda não teve uma auditoria independente.
   acrescenta segurança.
 - **Filtros automáticos e quem lê de passagem**: os formatos disfarçados não têm "BEGIN PGP" nem
   base64 e leem-se como texto. Com o código secreto, sem a frase nem se percebe que há PGP por baixo.
+- **Quem tira o disfarce** (com a app ou o desfazedor): vê PGP, mas não para quem é nem quem o
+  enviou, porque os disfarces não levam os ids das chaves (1.4.6).
 - **Quem pega no telemóvel desbloqueado**: PIN da app ou impressão digital, bloqueio ao fim de
   1 minuto fora, e o texto em claro sai do ecrã ao fim de 5 minutos fora.
 - **Coação para abrir a app**: o PIN de pânico destrói as chaves do Keystore (o que sobrar no
@@ -293,8 +307,8 @@ ainda não teve uma auditoria independente.
 - **Metadados fora da app**: com quem trocas mensagens, quando e quanto, na app de mensagens que
   usas.
 - **O tamanho da mensagem**: o comprimento do texto disfarçado deixa adivinhar o tamanho do que vai
-  lá dentro, como em qualquer encriptação sem enchimento. Sem código secreto, quem tiver a app
-  também vê para que chave é.
+  lá dentro, como em qualquer encriptação sem enchimento. Também se vê quantas cópias leva (uma
+  por destinatário, mais a tua) e o tipo de chave (ECC ou RSA), mas não de quem são.
 - **Desbloqueio forçado com o dedo**: se ligares a impressão digital, alguém pode obrigar-te a
   usá-la, e o PIN de pânico nunca chega a ser pedido. Com esse risco, usa só o PIN da app.
 - **Quem conhece o Reczi**: a app é pública, por isso quem a conhece sabe que existe PIN de pânico.

@@ -231,7 +231,10 @@ internal class EncryptScreen(a: MainActivity) : Screen(a, "Encriptar") {
         }
         val run = { chars: CharArray? ->
             a.work("A encriptar…", {
-                try { a.formatted(a.vault.encrypt(text, to, me!!, chars != null, chars, toSelf = !small), fmt.id, code) } finally { chars?.fill('\u0000') }
+                // Nos disfarces a mensagem não diz para que chaves é: quem tirar a camada de fora não
+                // fica a saber quem fala com quem.
+                val hide = fmt.style != null
+                try { a.formatted(a.vault.encrypt(text, to, me!!, chars != null, chars, toSelf = !small, hideRecipients = hide), fmt.id, code) } finally { chars?.fill('\u0000') }
             }) { out ->
                 showOutput(if (small) "Mensagem encriptada (compacta: não a consegues reler)" else "Mensagem encriptada", out)
                 outNote.text = sizeNote(out, fmt, small)

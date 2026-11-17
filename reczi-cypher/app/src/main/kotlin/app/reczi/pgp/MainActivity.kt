@@ -734,7 +734,7 @@ class MainActivity : Activity(), Ui {
         progress = AlertDialog.Builder(this).setView(row).setCancelable(false).showSecure()
     }
 
-    private fun showError(e: Throwable) {
+    internal fun showError(e: Throwable) {
         val msg = when (e) {
             is PgpError -> e.message ?: "Erro."
             is VaultKeyLostException -> return showOpenFailed(e)
@@ -820,15 +820,16 @@ class MainActivity : Activity(), Ui {
      * Palavra-passe de uma chave tua. Se estiver guardada (ver [QuickPass]), pede só a impressão digital
      * ou o PIN do telemóvel; senão pede-a escrita, com a opção de a guardar para a próxima vez.
      * [fpr]: a chave a usar. Sem ela, [candidates] são as tuas chaves que servem (as da mensagem, ao
-     * desencriptar), ou todas; usa a primeira com a palavra-passe guardada. O CharArray entregue a
+     * desencriptar), ou todas; usa a primeira com a palavra-passe guardada. Com [allowStored] a false
+     * pede-a sempre escrita (p. ex. quando a guardada abriu a chave errada). O CharArray entregue a
      * [onOk] tem de ser apagado por quem o usa.
      */
     internal fun keyPassphrase(
         title: String, hint: String, fpr: String? = null, onCancel: () -> Unit = {}, candidates: List<String>? = null,
-        onOk: (CharArray) -> Unit,
+        allowStored: Boolean = true, onOk: (CharArray) -> Unit,
     ) {
         val keys = fpr?.let { listOf(it) } ?: candidates?.takeIf { it.isNotEmpty() } ?: snap.myKeys.map { it.info.fingerprint }
-        val stored = if (quick.available()) keys.filter { quick.has(it) } else emptyList()
+        val stored = if (allowStored && quick.available()) keys.filter { quick.has(it) } else emptyList()
         val typed = { typedPassphrase(title, hint, keys.singleOrNull(), onCancel, onOk) }
         val target = stored.firstOrNull() ?: return typed()
         val cipher = quick.decrypter(target) ?: run {

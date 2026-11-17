@@ -8,6 +8,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
+import app.reczi.pgp.core.Pgp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -174,6 +175,32 @@ class AppFlowTest {
         click("Desencriptar")
         typePassphrase()
         assertTrue(textOnScreen().contains("encontro às 8"))
+    }
+
+    /**
+     * Mensagem sem ids (como vêm os disfarces) para a segunda de duas chaves: a palavra-passe da
+     * primeira abre a chave errada, a app explica e pede a da outra, em vez de dizer só "errada".
+     */
+    @Test
+    fun hiddenRecipientWithTwoKeysAsksForTheOtherPassphrase() {
+        createKey()
+        val pass2 = "a segunda chave tem outra frase"
+        val second = Pgp.generate("Ana pessoal", "ana@pessoal.pt", pass2.toCharArray())
+        activity.vault.addMyKey(second)
+        val msg = Pgp.encrypt("para a chave pessoal", listOf(Pgp.certificateOf(second)), null, null, hideRecipients = true)
+        assertTrue(Pgp.recipientKeyIds(msg).all { it == 0L })
+
+        menu("📥  Ler (desencriptar)")
+        field("Cola aqui a mensagem (normal ou disfarçada)").setText(msg)
+        click("Desencriptar")
+        typePassphrase() // a da primeira chave
+        val explained = dialogs().last()
+        val words = all(explained.window!!.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+        assertTrue(words, words.contains("escreve a palavra-passe da outra chave"))
+        explained.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        typePassphrase(pass2)
+        assertTrue(textOnScreen().contains("para a chave pessoal"))
     }
 
     @Test

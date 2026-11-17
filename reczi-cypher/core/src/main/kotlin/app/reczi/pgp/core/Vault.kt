@@ -562,14 +562,18 @@ class Vault(private val store: Store) {
      *
      * Modo compacto: com [toSelf] a false a mensagem vai só para os destinatários escolhidos (fica
      * mais curta, mas tu deixas de a conseguir reler); sem [sign] poupa-se também a assinatura.
+     *
+     * Com [hideRecipients] a mensagem não diz para que chaves é (ver [Pgp.encrypt]): serve para os
+     * disfarces, em que quem tira a camada de fora não deve ficar a saber quem fala com quem.
      */
     fun encrypt(
         text: String, recipientFprs: List<String>, myFpr: String, sign: Boolean, passphrase: CharArray?, toSelf: Boolean = true,
+        hideRecipients: Boolean = false,
     ): String {
         if (text.isEmpty()) throw PgpError("Escreve primeiro a mensagem.")
         val snap = snapshot()
         val me = snap.myKeys.firstOrNull { it.info.fingerprint == myFpr }?.ring ?: throw PgpError("Chave não encontrada.")
-        return Pgp.encrypt(text, recipients(snap, recipientFprs, myFpr, toSelf), if (sign) me else null, passphrase)
+        return Pgp.encrypt(text, recipients(snap, recipientFprs, myFpr, toSelf), if (sign) me else null, passphrase, hideRecipients)
     }
 
     private fun recipients(snap: Snapshot, recipientFprs: List<String>, myFpr: String, toSelf: Boolean = true): List<PGPPublicKeyRing> {
@@ -577,7 +581,9 @@ class Vault(private val store: Store) {
         val contacts = snap.contacts.associateBy { it.info.fingerprint }
         val mine = snap.myKeys.associateBy { it.info.fingerprint }
         if (myFpr !in mine) throw PgpError("Chave não encontrada.")
-        return (if (toSelf) recipientFprs + myFpr else recipientFprs).distinct().map { fpr ->
+        // A tua cópia vai primeiro. Sem ids, o GnuPG experimenta as cópias da última para a primeira
+        // e regista como erro cada uma que não é sua: assim quem recebe abre logo a dele, sem avisos.
+        return (if (toSelf) listOf(myFpr) + recipientFprs else recipientFprs).distinct().map { fpr ->
             val own = mine[fpr]
             if (own != null) {
                 if (!own.info.canEncrypt) throw PgpError("A tua chave ${own.info.userId} expirou ou foi revogada.")

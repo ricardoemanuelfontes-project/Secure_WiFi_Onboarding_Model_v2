@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.ScrollView
 import android.widget.TextView
 import app.reczi.pgp.core.DecryptResult
+import app.reczi.pgp.core.OtherKeyError
 import app.reczi.pgp.core.Pgp
 import app.reczi.pgp.core.SignatureStatus
 import app.reczi.pgp.MainActivity.Companion.KIND_FILE_DEC
@@ -102,10 +103,25 @@ internal class DecryptScreen(a: MainActivity) : Screen(a, "Desencriptar") {
         if (Pgp.isSignedText(msg)) return a.work("A verificar a assinatura…", { a.vault.verify(msg) }) { showResult(it, signedOnly = true) }
         a.work("A verificar…", { a.vault.myKeysFor(msg) }) { forKeys ->
             if (forKeys.isEmpty()) return@work a.alert("Desencriptar", "Esta mensagem não foi encriptada para nenhuma das tuas chaves.")
-            a.keyPassphrase("Desencriptar", "Palavra-passe da tua chave:", candidates = forKeys) { chars ->
-                a.work("A desencriptar…", {
-                    try { a.vault.decrypt(msg, chars) } finally { chars.fill('\u0000') }
-                }) { showResult(it) }
+            open(msg, forKeys, allowStored = true)
+        }
+    }
+
+    /**
+     * Com o destinatário escondido e várias chaves, a palavra-passe guardada (impressão digital) pode
+     * abrir a chave errada: nesse caso pede-se a palavra-passe escrita, da outra chave.
+     */
+    private fun open(msg: String, forKeys: List<String>, allowStored: Boolean) {
+        a.keyPassphrase("Desencriptar", "Palavra-passe da tua chave:", candidates = forKeys, allowStored = allowStored) { chars ->
+            a.work("A desencriptar…", {
+                try { runCatching { a.vault.decrypt(msg, chars) } } finally { chars.fill('\u0000') }
+            }) { r ->
+                val e = r.exceptionOrNull()
+                when {
+                    e == null -> showResult(r.getOrThrow())
+                    e is OtherKeyError -> a.alert("Desencriptar", e.message.orEmpty()) { open(msg, forKeys, allowStored = false) }
+                    else -> a.showError(e)
+                }
             }
         }
     }
