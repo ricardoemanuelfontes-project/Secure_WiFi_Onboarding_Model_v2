@@ -165,6 +165,22 @@ confirma que é tua e tu não a consegues reler.
 A chave pública também pode ser partilhada disfarçada. A app reconhece sozinha um texto disfarçado
 ao colar, importar ou receber por partilha.
 
+### Desfazedor de disfarce (no computador)
+
+Um pequeno programa Java que tira o disfarce e mostra o PGP normal que está por baixo, sem a app e
+sem Internet. Usa o mesmo código da app, por isso lê exatamente os mesmos formatos. Não desencripta
+nada nem pede chaves privadas: só tira a camada de fora.
+
+```bash
+./gradlew :core:desfazerJar                         # core/build/libs/reczi-desfazer.jar
+java -jar reczi-desfazer.jar mensagem.txt           # escreve o PGP que está por baixo
+java -jar reczi-desfazer.jar mensagem.txt | gpg -d  # e o GnuPG desencripta
+java -jar reczi-desfazer.jar --codigo mensagem.txt  # com código secreto (pede a frase)
+```
+
+Serve para confirmar, de fora, que o disfarce só esconde PGP normal, e para ler no computador uma
+mensagem disfarçada. Também é reprodutível: o mesmo commit dá sempre o mesmo `.jar`.
+
 ### Código secreto por contacto (opcional)
 
 Em Contactos, num contacto verificado, podes combinar um **código secreto**: uma frase que os dois
@@ -183,7 +199,7 @@ abrir.
 
 Limites do disfarce sem código secreto, para não haver ilusões:
 
-- Só quem usa o Reczi cypher consegue abrir um texto disfarçado (o GnuPG não).
+- Só quem usa o Reczi cypher (ou o desfazedor acima) consegue tirar o disfarce; o GnuPG sozinho não.
 - É camuflagem, não é segurança a mais: a chave do disfarce é fixa e está dentro da app, por isso
   quem tiver a app consegue ver que por baixo está PGP. O segredo da mensagem continua a depender
   só do OpenPGP.
