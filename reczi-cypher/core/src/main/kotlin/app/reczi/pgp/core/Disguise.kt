@@ -135,8 +135,10 @@ object Disguise {
      * índice do código que abriu o texto (-1 se foi a chave fixa da app).
      */
     fun revealWith(text: String, secrets: List<ByteArray>): Pair<ByteArray, Int>? {
+        // Um formato com problemas (p. ex. só num telemóvel) nunca pode impedir de ler os outros.
+        val books = runCatching { Books.all }.getOrDefault(emptyList())
         val candidates = (listOfNotNull(fromCode(text), fromWords(text), Poem.read(text)) +
-            Books.all.flatMap { it.read(text).orEmpty() }).filter { it.size > NONCE + TAG }
+            books.flatMap { b -> runCatching { b.read(text) }.getOrNull().orEmpty() }).filter { it.size > NONCE + TAG }
         if (candidates.isEmpty()) return null
         val all = listOf(-1 to fixed) + secrets.withIndex().flatMap { (i, k) -> listOf(i to keysOf(k), i to oldKeysOf(k)) }
         for (raw in candidates) for ((i, keys) in all) open(raw, keys)?.let { return it to i }

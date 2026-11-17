@@ -85,7 +85,9 @@ internal class Prose(
             for ((f, fam) in this.rhymes.withIndex()) for ((w, it) in fam.withIndex()) put(it.key, Entry(8, f * 16 + w, f), "rima")
         }
         val g = HashSet<String>()
-        (templates + openings + closings).forEach { t -> g += words(t.replace(Regex("\\{[^}]*}"), " ")) }
+        // Sem expressões regulares com chavetas: o Android (ICU) rejeita "}" sem escape, o Java não.
+        this.templates.forEach { t -> t.forEach { p -> if (p is String) g += words(p) } }
+        (openings + closings).forEach { g += words(it) }
         (this.lists.values.flatten() + this.rhymes.flatten()).forEach { g += glueOf(it) }
         CONTRACTIONS.values.forEach { m -> m.values.forEach { g += words(it) } }
         g += CONTRACTIONS.keys

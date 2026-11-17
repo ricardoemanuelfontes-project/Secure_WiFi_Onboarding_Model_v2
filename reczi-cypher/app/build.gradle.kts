@@ -15,8 +15,8 @@ android {
         applicationId = "app.reczi.pgp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.4.1"
+        versionCode = 8
+        versionName = "1.4.2"
     }
 
     // Chave de assinatura da app, FORA do projeto (nunca vai para um repositório):
