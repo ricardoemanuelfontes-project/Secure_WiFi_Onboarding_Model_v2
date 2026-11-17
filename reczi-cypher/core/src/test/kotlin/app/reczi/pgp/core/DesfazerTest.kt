@@ -11,10 +11,10 @@ import kotlin.test.assertTrue
 class DesfazerTest {
     private val pass = "cavalo bateria agrafo correto".toCharArray()
 
-    private fun run(text: String, code: CharArray? = null): Triple<Int, String, String> {
+    private fun run(text: String, code: CharArray? = null, args: List<String> = emptyList()): Triple<Int, String, String> {
         val out = ByteArrayOutputStream()
         val err = ByteArrayOutputStream()
-        val rc = Desfazer.run(emptyList(), ByteArrayInputStream(text.toByteArray()), PrintStream(out, true, "UTF-8"), PrintStream(err, true, "UTF-8"), code)
+        val rc = Desfazer.run(args, ByteArrayInputStream(text.toByteArray()), PrintStream(out, true, "UTF-8"), PrintStream(err, true, "UTF-8"), code)
         return Triple(rc, out.toString("UTF-8"), err.toString("UTF-8"))
     }
 
@@ -38,12 +38,13 @@ class DesfazerTest {
             assertTrue(err.contains("%016X".format(Pgp.keyIds(Pgp.certificateOf(r)).last())) || err.contains("Para as chaves"), err)
         }
 
-        // Com código secreto: sem a frase não abre; com ela, abre.
+        // Com código secreto: sem a frase não abre; com ela (e as duas impressões digitais), abre.
         ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray())
         val coded = ana.disguise(msg, Disguise.Style.Lyrics2, ruiFpr)
+        val both = listOf("--chaves", Pgp.fingerprint(a), ruiFpr)
         assertEquals(1, run(coded).first)
-        assertEquals(1, run(coded, "outra frase qualquer".toCharArray()).first)
-        val (rc, out) = run(coded, "o gato comeu a sardinha".toCharArray())
+        assertEquals(1, run(coded, "outra frase qualquer".toCharArray(), both).first)
+        val (rc, out) = run(coded, "o gato comeu a sardinha".toCharArray(), both)
         assertEquals(0, rc)
         assertTrue(out.startsWith("-----BEGIN PGP MESSAGE-----"))
     }

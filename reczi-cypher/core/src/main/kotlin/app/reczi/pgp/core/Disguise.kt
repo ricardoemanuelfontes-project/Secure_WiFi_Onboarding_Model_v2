@@ -28,7 +28,8 @@ import javax.crypto.spec.SecretKeySpec
  * (crónica, diário de viagem, relato de futebol, letra de rap e letra 2).
  *
  * CÓDIGO SECRETO (opcional, por contacto): em vez da chave fixa, a camada de fora usa uma chave
- * derivada de uma frase combinada entre duas pessoas ([deriveSecret]). Nesse caso é mesmo uma
+ * derivada de uma frase combinada entre duas pessoas ([deriveSecret]; desde a 1.4.6 com as
+ * impressões digitais das duas no sal). Nesse caso é mesmo uma
  * segunda camada de segurança: sem a frase, nem com a app se consegue ver que por baixo está PGP.
  * Desde a versão 1.4 esta camada usa ChaCha20 em vez de AES: o PGP por baixo já usa AES, e assim
  * as duas camadas são algoritmos diferentes com chaves independentes (uma "cascata"); se um dia
@@ -59,16 +60,39 @@ object Disguise {
     const val MIN_CODE = 8
 
     /**
-     * Transforma a frase combinada numa chave de 32 bytes, com scrypt (lento e com muita memória,
-     * para dificultar adivinhar a frase). O sal é fixo, porque as duas pessoas têm de chegar à mesma
-     * chave só a partir da frase. Diferenças de espaços no início/fim e de forma Unicode não contam;
+     * Versão 1 (até à 1.4.5): transforma a frase combinada numa chave de 32 bytes, com scrypt (lento e
+     * com muita memória, para dificultar adivinhar a frase), com um sal FIXO, igual para toda a gente.
+     * Isso deixa preparar uma tabela de frases comuns uma vez e usá-la contra as mensagens de todos.
+     * Fica só para ler mensagens antigas e para os códigos combinados antes da 1.4.6; os novos usam a
+     * versão 2 (abaixo). Diferenças de espaços no início/fim e de forma Unicode não contam;
      * maiúsculas e minúsculas contam.
      */
-    fun deriveSecret(code: CharArray): ByteArray {
+    fun deriveSecret(code: CharArray): ByteArray = scrypt(code, "Reczi cypher / código secreto v1")
+
+    /**
+     * Versão 2 (1.4.6): o sal leva as impressões digitais das duas chaves, por ordem (a ordem em que
+     * se passam não conta). Cada par de pessoas fica com o seu próprio espaço de procura: uma tabela
+     * de frases preparada para um par não serve para nenhum outro, e quem apanha uma mensagem nem
+     * sabe a que par pertence (os disfarces não levam os ids das chaves). As impressões digitais são
+     * públicas e as duas pessoas já as confirmaram uma à outra, por isso chegam à mesma chave sem
+     * trocar mais nada.
+     */
+    fun deriveSecret(code: CharArray, fingerprintA: String, fingerprintB: String): ByteArray {
+        val (lo, hi) = listOf(cleanFingerprint(fingerprintA), cleanFingerprint(fingerprintB)).sorted()
+        return scrypt(code, "Reczi cypher / código secreto v2 / $lo / $hi")
+    }
+
+    private fun cleanFingerprint(fpr: String): String {
+        val clean = fpr.filterNot { it.isWhitespace() }.uppercase()
+        if (!clean.matches(Regex("[0-9A-F]{40,64}"))) throw PgpError("Impressão digital inválida: $fpr")
+        return clean
+    }
+
+    private fun scrypt(code: CharArray, salt: String): ByteArray {
         val normalized = java.text.Normalizer.normalize(String(code).trim(), java.text.Normalizer.Form.NFKC)
         if (normalized.length < MIN_CODE) throw PgpError("O código secreto tem de ter pelo menos $MIN_CODE caracteres. Usa uma frase.")
         return org.bouncycastle.crypto.generators.SCrypt.generate(
-            normalized.toByteArray(Charsets.UTF_8), "Reczi cypher / código secreto v1".toByteArray(Charsets.UTF_8), 1 shl 15, 8, 1, 32,
+            normalized.toByteArray(Charsets.UTF_8), salt.toByteArray(Charsets.UTF_8), 1 shl 15, 8, 1, 32,
         )
     }
 

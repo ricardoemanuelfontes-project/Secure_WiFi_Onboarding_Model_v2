@@ -74,8 +74,13 @@ internal class ContactsScreen(a: MainActivity) : Screen(a, "Contactos") {
             setTextColor(if (c.verified) green else orange)
         })
         if (c.codeCheck != null) v.addView(TextView(a).apply {
-            text = "✔ Código secreto combinado (confirmação: ${c.codeCheck})"
-            setTextColor(green)
+            text = if (c.codeIsOld) {
+                "Código secreto combinado com uma versão antiga (confirmação: ${c.codeCheck}). Funciona, mas é mais fraco: " +
+                    "combinem-no de novo, os dois com a versão 1.4.6 ou mais recente (pode ser a mesma frase)."
+            } else {
+                "✔ Código secreto combinado (confirmação: ${c.codeCheck})"
+            }
+            setTextColor(if (c.codeIsOld) orange else green)
         })
         if (c.verified && c.info.canEncrypt) v.addView(primaryButton("Conversa") { a.messages.converse(c.info.fingerprint) })
         if (c.verified) v.addView(buttonRow(*listOfNotNull(

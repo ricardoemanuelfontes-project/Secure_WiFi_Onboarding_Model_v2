@@ -31,10 +31,23 @@ data class Contact(
     val verified: Boolean,
     /** Se há um código secreto combinado com este contacto: os algarismos para o confirmar. */
     val codeCheck: String? = null,
+    /** O código foi combinado antes da 1.4.6 (sal igual para todos): convém combiná-lo de novo. */
+    val codeIsOld: Boolean = false,
 )
 
-/** Um texto disfarçado já convertido em PGP normal; [codeFpr] é o contacto cujo código secreto o abriu. */
-data class Revealed(val armored: String, val codeFpr: String?)
+/**
+ * Um texto disfarçado já convertido em PGP normal; [codeFpr] é o contacto cujo código secreto o abriu
+ * e [oldCode] diz se foi um código da versão antiga (sal igual para todos).
+ */
+data class Revealed(val armored: String, val codeFpr: String?, val oldCode: Boolean = false)
+
+/** Algarismos de confirmação de um código secreto acabado de combinar. */
+data class CodeCheck(
+    /** Por cada chave tua (impressão digital): os algarismos que o contacto também tem de ver. */
+    val digits: Map<String, String>,
+    /** Os algarismos que uma versão antiga da app (até à 1.4.5) mostraria com a mesma frase. */
+    val oldDigits: String,
+)
 
 /**
  * Um ficheiro do cofre que não foi possível ler ou avaliar. Se o ficheiro se leu mas a chave não
@@ -102,13 +115,20 @@ class Vault(private val store: Store) {
             }
         }
         val mine = myKeys.map { it.info.fingerprint }.toSet()
+        val myNames = myKeys.associate { it.info.fingerprint to it.info.userId }
         val contacts = store.names().filter { it.startsWith(PUB) }.mapNotNull { name ->
             try {
                 val cert = PGPainless.readKeyRing().publicKeyRing(load(name) ?: return@mapNotNull null)
                     ?: throw PgpError("vazio")
                 val info = Pgp.info(cert)
-                if (info.fingerprint in mine) null
-                else Contact(cert, info, info.fingerprint in verified, code(info.fingerprint)?.let(Disguise::checkDigits))
+                if (info.fingerprint in mine) return@mapNotNull null
+                val pairs = runCatching { pairs(info.fingerprint) }.getOrNull()
+                val check = when {
+                    pairs != null && pairs.size == 1 -> Disguise.checkDigits(pairs.values.single())
+                    pairs != null -> pairs.entries.joinToString("; ") { (fpr, s) -> "${Disguise.checkDigits(s)} (${myNames[fpr] ?: fpr.takeLast(16)})" }
+                    else -> runCatching { code(info.fingerprint) }.getOrNull()?.let(Disguise::checkDigits)
+                }
+                Contact(cert, info, info.fingerprint in verified, check, codeIsOld = pairs == null && check != null)
             } catch (e: Exception) {
                 broken += BrokenEntry(name, false, reason(e))
                 null
@@ -192,6 +212,7 @@ class Vault(private val store: Store) {
     fun deleteContact(fingerprint: String) {
         remove(PUB + fingerprint)
         remove(CODE + fingerprint)
+        remove(PAIR + fingerprint)
         setVerified(fingerprint, false)
         forgetPrefs(fingerprint)
     }
@@ -205,21 +226,50 @@ class Vault(private val store: Store) {
 
     /**
      * Guarda o código secreto combinado com um contacto (ver [Disguise]). Fica guardada só a chave
-     * derivada da frase, não a frase. Devolve os algarismos de confirmação.
+     * derivada da frase, não a frase: uma por cada chave tua (versão 2, com as impressões digitais
+     * das duas chaves no sal) e a da versão antiga, só para continuares a ler as mensagens antigas
+     * que tenham vindo com a mesma frase. Devolve os algarismos de confirmação.
+     *
+     * Não é preciso nenhum interruptor "o outro já atualizou": ao combinarem o código, os
+     * algarismos só coincidem se as duas apps forem da 1.4.6 ou mais recentes (uma antiga mostra os
+     * [CodeCheck.oldDigits]).
      */
-    fun setCode(fingerprint: String, code: CharArray): String {
-        val secret = Disguise.deriveSecret(code) // lento: fora do bloqueio do cofre
+    fun setCode(fingerprint: String, code: CharArray): CodeCheck {
+        val snap = snapshot()
+        if (snap.contacts.none { it.info.fingerprint == fingerprint }) throw PgpError("Destinatário desconhecido.")
+        val mine = snap.myKeys.map { it.info.fingerprint }
+        if (mine.isEmpty()) throw PgpError("Cria primeiro a tua chave: o código secreto fica ligado a ela e à do contacto.")
+        // Lento (scrypt): fora do bloqueio do cofre.
+        val old = Disguise.deriveSecret(code)
+        val pairs = mine.associateWith { Disguise.deriveSecret(code, it, fingerprint) }
         synchronized(this) {
             if (snapshot().contacts.none { it.info.fingerprint == fingerprint }) throw PgpError("Destinatário desconhecido.")
-            save(CODE + fingerprint, secret)
+            save(CODE + fingerprint, old)
+            save(PAIR + fingerprint, encodePairs(pairs))
         }
-        return Disguise.checkDigits(secret)
+        return CodeCheck(pairs.mapValues { Disguise.checkDigits(it.value) }, Disguise.checkDigits(old))
     }
 
     @Synchronized
-    fun clearCode(fingerprint: String) = remove(CODE + fingerprint)
+    fun clearCode(fingerprint: String) {
+        remove(CODE + fingerprint)
+        remove(PAIR + fingerprint)
+    }
 
+    /** O código da versão antiga (sal igual para todos), combinado antes da 1.4.6 ou guardado para ler o que veio com ele. */
     private fun code(fingerprint: String): ByteArray? = load(CODE + fingerprint)?.takeIf { it.size == 32 }
+
+    /** Os códigos da versão 2 com um contacto: impressão digital de cada chave tua -> chave derivada. */
+    private fun pairs(fingerprint: String): Map<String, ByteArray>? = load(PAIR + fingerprint)?.let(::decodePairs)
+
+    /** A chave do código secreto para enviar a [contact] com a tua chave [myFpr]. */
+    private fun sendSecret(contact: String, myFpr: String?): ByteArray {
+        val pairs = pairs(contact) ?: return code(contact) ?: throw PgpError("Não há código secreto combinado com este contacto.")
+        return pairs[myFpr ?: pairs.keys.singleOrNull()] ?: throw PgpError(
+            "O código secreto com este contacto foi combinado quando ainda não tinhas esta chave. " +
+                "Combinem-no de novo (pode ser a mesma frase), ou escolhe em \"De:\" a chave com que o combinaste."
+        )
+    }
 
     /**
      * Disfarça um texto PGP (mensagem ou chave). Com [codeFpr], usa o código secreto combinado
@@ -229,9 +279,10 @@ class Vault(private val store: Store) {
     fun disguise(armored: String, words: Boolean, codeFpr: String? = null): String =
         disguise(armored, if (words) Disguise.Style.Words else Disguise.Style.Code, codeFpr)
 
+    /** [myFpr]: a tua chave que envia (com várias chaves, escolhe o código combinado com ela). */
     @Synchronized
-    fun disguise(armored: String, style: Disguise.Style, codeFpr: String? = null): String {
-        val secret = codeFpr?.let { code(it) ?: throw PgpError("Não há código secreto combinado com este contacto.") }
+    fun disguise(armored: String, style: Disguise.Style, codeFpr: String? = null, myFpr: String? = null): String {
+        val secret = codeFpr?.let { sendSecret(it, myFpr) }
         return Disguise.hide(Pgp.dearmor(armored), style, secret)
     }
 
@@ -241,10 +292,20 @@ class Vault(private val store: Store) {
      */
     @Synchronized
     fun reveal(text: String): Revealed? {
-        val codes = store.names().filter { it.startsWith(CODE) }.mapNotNull { n -> code(n.removePrefix(CODE))?.let { n.removePrefix(CODE) to it } }
-        val (bytes, i) = Disguise.revealWith(text, codes.map { it.second }) ?: return null
+        class Code(val contact: String, val secret: ByteArray, val old: Boolean)
+        val names = store.names()
+        // Primeiro os códigos da versão 2; depois os antigos, para o que veio de apps antigas.
+        val codes = names.filter { it.startsWith(PAIR) }.flatMap { n ->
+            val fpr = n.removePrefix(PAIR)
+            runCatching { pairs(fpr) }.getOrNull().orEmpty().values.map { Code(fpr, it, old = false) }
+        } + names.filter { it.startsWith(CODE) }.mapNotNull { n ->
+            val fpr = n.removePrefix(CODE)
+            runCatching { code(fpr) }.getOrNull()?.let { Code(fpr, it, old = true) }
+        }
+        val (bytes, i) = Disguise.revealWith(text, codes.map { it.secret }) ?: return null
         val armored = runCatching { Pgp.ensureArmored(bytes) }.getOrNull() ?: return null
-        return Revealed(armored, codes.getOrNull(i)?.first)
+        val c = codes.getOrNull(i)
+        return Revealed(armored, c?.contact, oldCode = c?.old == true)
     }
 
     /** Texto recebido → PGP normal, com uma explicação útil quando não se reconhece. */
@@ -432,10 +493,16 @@ class Vault(private val store: Store) {
             val known = snapshot().contacts.map { it.info.fingerprint }.toSet()
             // O backup está autenticado pela palavra-passe: as verificações que lá vêm são as tuas.
             entries[VERIFIED]?.toString(Charsets.UTF_8)?.lines()?.filter { it in known }?.forEach { setVerified(it, true) }
+            val withCode = HashSet<String>()
             for ((name, bytes) in entries.filterKeys { it.startsWith(CODE) }) {
                 val fpr = name.removePrefix(CODE)
-                if (fpr in known && bytes.size == 32 && load(name) == null) { save(name, bytes); codes++ }
+                if (fpr in known && bytes.size == 32 && load(name) == null) { save(name, bytes); withCode += fpr }
             }
+            for ((name, bytes) in entries.filterKeys { it.startsWith(PAIR) }) {
+                val fpr = name.removePrefix(PAIR)
+                if (fpr in known && decodePairs(bytes) != null && load(name) == null) { save(name, bytes); withCode += fpr }
+            }
+            codes = withCode.size
             for ((name, bytes) in entries.filterKeys { it.startsWith(NOTE) }) {
                 val parts = String(bytes, Charsets.UTF_8).split("\n", limit = 3)
                 val ok = hex.matches(name.removePrefix(NOTE)) && parts.size == 3 && parts[0].toLongOrNull() != null && "BEGIN PGP MESSAGE" in parts[2]
@@ -639,7 +706,7 @@ class Vault(private val store: Store) {
         if (myKeys.isEmpty()) throw PgpError("Ainda não tens nenhuma chave privada.")
         if (!isForMe(message)) throw PgpError("Esta mensagem não foi encriptada para nenhuma das tuas chaves.")
         val d = Pgp.decrypt(message, myKeys, passphrase, trustOrder(snap))
-        return result(d.text, d.signature, snap, revealed.codeFpr)
+        return result(d.text, d.signature, snap, revealed.codeFpr).copy(oldSecretCode = revealed.oldCode)
     }
 
     private fun load(name: String): ByteArray? {
@@ -666,6 +733,10 @@ class Vault(private val store: Store) {
         private const val PUB = "pub-"
         private const val VERIFIED = "verified"
         private const val CODE = "code-"
+        /** Códigos secretos da versão 2 (1.4.6), um por contacto, com uma chave derivada por cada chave tua. */
+        private const val PAIR = "codepair-"
+        private val PAIR_MAGIC = "RCP2".toByteArray(Charsets.US_ASCII)
+        private val FPR = Regex("[0-9A-F]{40,64}")
         private const val NOTE = "note-"
         private const val PIN = "pin"
         private const val PANIC = "panic"
@@ -675,7 +746,36 @@ class Vault(private val store: Store) {
         /** Nome aceite para uma preferência privada: letras, opcionalmente seguidas de "-<fingerprint>". */
         fun isPrefName(name: String) = PREF_NAME.matches(name)
         /** O que entra num backup completo (além da lista de verificados). */
-        private val KINDS = listOf(SEC, PUB, CODE, NOTE)
+        private val KINDS = listOf(SEC, PUB, CODE, PAIR, NOTE)
+
+        /** "RCP2" e, por cada chave tua: tamanho e impressão digital (ASCII), e os 32 bytes da chave derivada. */
+        private fun encodePairs(pairs: Map<String, ByteArray>): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            out.write(PAIR_MAGIC)
+            for ((fpr, secret) in pairs) {
+                val f = fpr.toByteArray(Charsets.US_ASCII)
+                require(FPR.matches(fpr) && secret.size == 32)
+                out.write(f.size)
+                out.write(f)
+                out.write(secret)
+            }
+            return out.toByteArray()
+        }
+
+        private fun decodePairs(data: ByteArray): Map<String, ByteArray>? {
+            if (data.size < PAIR_MAGIC.size || !data.copyOf(PAIR_MAGIC.size).contentEquals(PAIR_MAGIC)) return null
+            val out = LinkedHashMap<String, ByteArray>()
+            var i = PAIR_MAGIC.size
+            while (i < data.size) {
+                val n = data[i].toInt() and 0xff
+                if (i + 1 + n + 32 > data.size) return null
+                val fpr = String(data, i + 1, n, Charsets.US_ASCII)
+                if (!FPR.matches(fpr)) return null
+                out[fpr] = data.copyOfRange(i + 1 + n, i + 1 + n + 32)
+                i += 1 + n + 32
+            }
+            return out.takeIf { it.isNotEmpty() }
+        }
     }
 }
 
@@ -687,4 +787,6 @@ data class DecryptResult(
     val signerVerified: Boolean,
     /** Se a mensagem vinha disfarçada com um código secreto: o contacto com quem está combinado. */
     val secretCodeWith: String? = null,
+    /** O código secreto era da versão antiga (sal igual para todos). */
+    val oldSecretCode: Boolean = false,
 )

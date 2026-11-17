@@ -136,7 +136,7 @@ class CypherTest {
         val (a, r) = pair()
         val (ana, anaFpr) = a
         val (rui, ruiFpr) = r
-        val check = ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray())
+        val check = ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray()).digits.values.single()
         assertEquals(check, ana.contacts().single().codeCheck)
         val armored = ana.encrypt("só nós dois", listOf(ruiFpr), anaFpr, true, pass)
 
@@ -153,7 +153,7 @@ class CypherTest {
             assertNull(rui.reveal(hidden))
 
             // Código certo (espaços à volta não contam): abre, e diz com quem é o código.
-            assertEquals(check, rui.setCode(anaFpr, "  o gato comeu a sardinha ".toCharArray()))
+            assertEquals(check, rui.setCode(anaFpr, "  o gato comeu a sardinha ".toCharArray()).digits.values.single())
             assertEquals(anaFpr, rui.reveal(hidden)!!.codeFpr)
             val d = rui.decrypt(hidden, pass)
             assertEquals("só nós dois", d.text)

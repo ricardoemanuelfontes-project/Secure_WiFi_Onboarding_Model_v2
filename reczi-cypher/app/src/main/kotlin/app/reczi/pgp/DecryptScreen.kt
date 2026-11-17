@@ -150,6 +150,8 @@ internal class DecryptScreen(a: MainActivity) : Screen(a, "Desencriptar") {
         status.text = when {
             signedOnly -> "$text\nEste texto não estava encriptado, só assinado."
             r.secretCodeWith == null -> text
+            r.oldSecretCode -> "$text\n🔒 Veio fechada com o código secreto combinado com ${r.secretCodeWith}, na versão antiga " +
+                "(mais fraca). Combinem-no de novo, os dois com a versão 1.4.6 ou mais recente."
             else -> "$text\n🔒 Veio fechada com o código secreto combinado com ${r.secretCodeWith}."
         }
         status.setTextColor(color)

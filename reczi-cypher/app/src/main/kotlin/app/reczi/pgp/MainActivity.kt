@@ -1321,10 +1321,10 @@ class MainActivity : Activity(), Ui {
 
     /**
      * [format]: o id do formato ([Format.id]). [codeFpr]: contacto cujo código secreto fecha a camada
-     * de fora (só nos formatos disfarçados).
+     * de fora (só nos formatos disfarçados); [myFpr]: a tua chave que envia (o código é do par).
      */
-    internal fun formatted(armored: String, format: Int, codeFpr: String?): String =
-        formatById(format).style?.let { vault.disguise(armored, it, codeFpr) } ?: armored
+    internal fun formatted(armored: String, format: Int, codeFpr: String?, myFpr: String? = null): String =
+        formatById(format).style?.let { vault.disguise(armored, it, codeFpr, myFpr) } ?: armored
 
     /** Combinar (ou mudar) o código secreto com um contacto. */
     internal fun askSecretCode(c: Contact) {
@@ -1339,10 +1339,15 @@ class MainActivity : Activity(), Ui {
             change("A guardar…", {
                 try { vault.setCode(c.info.fingerprint, chars) } finally { chars.fill('\u0000') }
             }) { check ->
+                val names = snap.myKeys.associate { it.info.fingerprint to it.info.userId }
+                val digits = check.digits.values.singleOrNull()?.let { "Confirmação: $it" }
+                    ?: ("Confirmação, conforme a tua chave que ${c.info.userId} tem:\n" +
+                        check.digits.entries.joinToString("\n") { (fpr, d) -> "• $d - ${names[fpr] ?: fpr.takeLast(16)}" })
                 alert(
                     "Código secreto guardado",
-                    "Confirmação: $check\n\nNa app de ${c.info.userId} têm de aparecer os mesmos algarismos. " +
-                        "Se forem diferentes, um dos dois escreveu a frase de outra maneira.\n\n" +
+                    "$digits\n\nNa app de ${c.info.userId} têm de aparecer os mesmos algarismos. " +
+                        "Se forem diferentes, um dos dois escreveu a frase de outra maneira. Se lá aparecer " +
+                        "${check.oldDigits}, a app de ${c.info.userId} é antiga (até à 1.4.5): atualizem os dois antes de usar o código.\n\n" +
                         "Para o usar: em Mensagens > Escrever, escolhe um formato disfarçado e só este destinatário."
                 )
             }

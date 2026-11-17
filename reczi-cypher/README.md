@@ -177,7 +177,9 @@ nada nem pede chaves privadas: só tira a camada de fora.
 ./gradlew :core:desfazerJar                         # core/build/libs/reczi-desfazer.jar
 java -jar reczi-desfazer.jar mensagem.txt           # escreve o PGP que está por baixo
 java -jar reczi-desfazer.jar mensagem.txt | gpg -d  # e o GnuPG desencripta
-java -jar reczi-desfazer.jar --codigo mensagem.txt  # com código secreto (pede a frase)
+java -jar reczi-desfazer.jar --codigo --chaves <impressão digital> <impressão digital> mensagem.txt
+                                                    # com código secreto (pede a frase; as duas
+                                                    # impressões digitais desde a 1.4.6)
 ```
 
 Serve para confirmar, de fora, que o disfarce só esconde PGP normal, e para ler no computador uma
@@ -202,6 +204,25 @@ diferentes com chaves independentes (uma "cascata"), e se um dia um deles falhar
 proteger. As mensagens com código feitas antes da 1.4 (AES) continuam a abrir. Fica guardada
 só a chave derivada, dentro do cofre. Se mudarem a frase, as mensagens antigas com código deixam de
 abrir.
+
+**Sal das duas chaves (1.4.6).** Até à 1.4.5, o scrypt usava um sal fixo, igual para toda a gente:
+quem preparasse uma tabela de frases comuns podia usá-la contra as mensagens de todos ao mesmo
+tempo. Agora o sal leva as impressões digitais das duas chaves (a tua e a do contacto, por ordem),
+que são públicas e que os dois já confirmaram: cada par de pessoas tem o seu próprio espaço de
+procura, e quem apanha uma mensagem nem sabe a que par pertence (os disfarces não levam os ids das
+chaves). Contra quem ataca o vosso par em concreto, o que protege continua a ser uma frase longa e
+pessoal.
+
+- Não há interruptor "o outro já atualizou": ao combinarem o código, os algarismos só coincidem se as
+  duas apps forem da 1.4.6 ou mais recentes. Se no telemóvel do outro aparecerem os algarismos que a
+  app indica como "de uma app antiga", atualizem os dois antes de usar o código.
+- Os códigos combinados antes da 1.4.6 continuam a funcionar como antes, com o aviso de que são da
+  versão antiga. Para os reforçar, combinem-nos de novo, os dois (pode ser a mesma frase): as
+  mensagens antigas continuam a abrir.
+- Com várias chaves tuas, a app mostra os algarismos de cada uma (coincidem os da chave que o
+  contacto tem). Uma chave criada depois de combinarem o código não o tem: para a usares com esse
+  contacto, combinem-no de novo.
+- No desfazedor: `java -jar reczi-desfazer.jar --codigo --chaves <a tua impressão digital> <a do contacto> mensagem.txt`.
 
 Limites do disfarce sem código secreto, para não haver ilusões:
 
@@ -313,8 +334,10 @@ ainda não teve uma auditoria independente.
   usá-la, e o PIN de pânico nunca chega a ser pedido. Com esse risco, usa só o PIN da app.
 - **Quem conhece o Reczi**: a app é pública, por isso quem a conhece sabe que existe PIN de pânico.
   Garante-se que os dados não se recuperam, não que ninguém desconfie.
-- **Frases fracas no código secreto**: o sal é igual para todos, por isso uma frase comum pode ser
-  testada contra muitas mensagens de uma vez. Usa uma frase longa e pessoal.
+- **Frases fracas no código secreto**: desde a 1.4.6 o sal é de cada par de chaves, por isso já não
+  se testa uma frase contra as mensagens de toda a gente de uma vez; mas quem atacar o vosso par em
+  concreto pode experimentar frases comuns. Usa uma frase longa e pessoal. Os códigos combinados
+  antes da 1.4.6 continuam com o sal antigo, igual para todos, até os combinarem de novo.
 - **Perder o telemóvel sem backup**: as chaves vão com ele.
 - **Verificar o destinatário errado**: confirmar o fingerprint de cada contacto é contigo.
 

@@ -8,6 +8,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
+import app.reczi.pgp.core.Disguise
 import app.reczi.pgp.core.Pgp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -201,6 +202,34 @@ class AppFlowTest {
         idle()
         typePassphrase(pass2)
         assertTrue(textOnScreen().contains("para a chave pessoal"))
+    }
+
+    /**
+     * Combinar o código secreto (1.4.6): os algarismos são os do par de chaves, e a app diz quais
+     * apareceriam numa app antiga, para se dar pela diferença antes de usar o código.
+     */
+    @Test
+    fun secretCodeShowsThePairDigitsAndTheOldOnes() {
+        createKey()
+        val rui = Pgp.generate("Rui", "rui@exemplo.pt", pass.toCharArray())
+        val ruiFpr = Pgp.fingerprint(rui)
+        activity.change("…", { activity.vault.importContacts(listOf(Pgp.certificateOf(rui))); activity.vault.setVerified(ruiFpr, true) })
+        waitIdle()
+        menu("👥  Contactos")
+        click("Código secreto…")
+        val d = dialogs().last()
+        all(d.window!!.decorView).filterIsInstance<EditText>().forEach { it.setText("o gato comeu a sardinha") }
+        d.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        idle()
+        waitIdle()
+        val anaFpr = activity.vault.myKeys().map { Pgp.fingerprint(it) }.single()
+        val pairDigits = Disguise.checkDigits(Disguise.deriveSecret("o gato comeu a sardinha".toCharArray(), anaFpr, ruiFpr))
+        val oldDigits = Disguise.checkDigits(Disguise.deriveSecret("o gato comeu a sardinha".toCharArray()))
+        val shown = dialogs().last().let { all(it.window!!.decorView).filterIsInstance<TextView>().joinToString("\n") { v -> v.text.toString() } }
+        assertTrue(shown, shown.contains("Confirmação: $pairDigits"))
+        assertTrue(shown, shown.contains("Se lá aparecer $oldDigits, a app de Rui"))
+        dismissAlerts()
+        assertTrue(textOnScreen().contains("✔ Código secreto combinado (confirmação: $pairDigits)"))
     }
 
     @Test
