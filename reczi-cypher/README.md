@@ -268,6 +268,9 @@ ainda não teve uma auditoria independente.
   palavras saem uniformes demais). É camuflagem, não esteganografia indetetável.
 - **Metadados fora da app**: com quem trocas mensagens, quando e quanto, na app de mensagens que
   usas.
+- **O tamanho da mensagem**: o comprimento do texto disfarçado deixa adivinhar o tamanho do que vai
+  lá dentro, como em qualquer encriptação sem enchimento. Sem código secreto, quem tiver a app
+  também vê para que chave é.
 - **Desbloqueio forçado com o dedo**: se ligares a impressão digital, alguém pode obrigar-te a
   usá-la, e o PIN de pânico nunca chega a ser pedido. Com esse risco, usa só o PIN da app.
 - **Quem conhece o Reczi**: a app é pública, por isso quem a conhece sabe que existe PIN de pânico.
@@ -282,7 +285,9 @@ ainda não teve uma auditoria independente.
 - O id interno da app continua `app.reczi.pgp` (só o nome visível mudou), para as atualizações
   se instalarem por cima da versão anterior sem perder as chaves.
 - `core/`: a criptografia e o cofre, em Kotlin puro. Tem testes que incluem trocas reais com o
-  GnuPG 2.4 nos dois sentidos.
+  GnuPG 2.4 nos dois sentidos, e testes de "fuzzing": milhares de textos, ficheiros e códigos QR
+  estragados ou ao acaso passam por tudo o que lê coisas vindas de fora, e só se aceita a resposta
+  "não é válido", sem exceções inesperadas nem demoras (o texto colado pode ser um livro inteiro).
 - `app/`: a interface Android (só a framework, sem AndroidX) e o armazenamento no Keystore.
   Tem testes da interface (Robolectric, correm no computador sem telemóvel): criar chave,
   encriptar para ti e ler, assinar e verificar, o menu e os submenus das chaves, o cofre (nomes
@@ -299,6 +304,27 @@ Precisa de JDK 17+ e do SDK do Android (plataforma 35).
 ./gradlew :app:assembleRelease
 # APK em app/build/outputs/apk/release/app-release.apk
 ```
+
+### Compilação reprodutível
+
+O mesmo código dá sempre o mesmo APK, byte a byte. A 1.4.3 foi compilada duas vezes do zero, uma
+delas noutra pasta, e o APK assinado saiu com o mesmo SHA-256
+(`dc2e4e52f676a81a4b64f9805b8ab425259ab21e76e6f8f2685cb4833f68dc94`). Isto foi confirmado com o
+OpenJDK 21 e o Linux; noutro sistema ou com outro JDK ainda não foi experimentado. Assim, qualquer
+pessoa pode confirmar que um APK publicado vem deste código, sem ter de confiar em quem o compilou:
+
+1. Compila o mesmo commit com uma chave tua (`-Preczi.storeFile=...`).
+2. Compara o conteúdo, que não depende da chave: a assinatura fica fora dos ficheiros do zip
+   (assinatura v2/v3; a v1 não é usada).
+
+```bash
+mkdir a b
+unzip -q -d a reczi-cypher-publicado.apk
+unzip -q -d b app/build/outputs/apk/release/app-release.apk
+diff -r a b && echo "igual"
+```
+
+### Verificação das bibliotecas
 
 Compila sempre a partir da pasta de cima (como acima): é aí que está a verificação das bibliotecas
 (`gradle/verification-metadata.xml`), que também cobre o núcleo. Ao mudar uma biblioteca, atualiza
