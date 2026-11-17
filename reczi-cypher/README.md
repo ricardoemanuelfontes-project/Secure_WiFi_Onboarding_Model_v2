@@ -309,7 +309,9 @@ abriam mensagens assim.
 ## Modelo de ameaça
 
 Para que serve a app e para que não serve. É isto que uma auditoria compara com o código. A app
-ainda não teve uma auditoria independente.
+ainda não teve uma auditoria independente. O documento completo, com o sítio (ficheiro ou teste)
+onde se confirma cada garantia e cada limite, e o que está em aberto, é o
+[THREAT_MODEL.md](THREAT_MODEL.md); aqui fica o resumo.
 
 **Protege contra:**
 
