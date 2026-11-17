@@ -73,6 +73,9 @@ data class RestoreResult(val keys: Int, val contacts: Int, val notes: Int, val c
  */
 class Vault(private val store: Store) {
     private val cache = HashMap<String, ByteArray>()
+    /** Preferências privadas em memória (ver [prefs]); têm bloqueio próprio, curto. */
+    private val prefsLock = Any()
+    private var prefs: Map<String, String>? = null
 
     @Synchronized
     fun snapshot(): Snapshot {
@@ -120,6 +123,7 @@ class Vault(private val store: Store) {
                 null
             }
         }.sortedByDescending { it.saved }
+        prefs() // fica em memória: a interface lê-as sem tocar no armazenamento
         return Snapshot(myKeys, contacts, broken, notes)
     }
 
@@ -143,7 +147,10 @@ class Vault(private val store: Store) {
     }
 
     @Synchronized
-    fun deleteMyKey(fingerprint: String) = remove(SEC + fingerprint)
+    fun deleteMyKey(fingerprint: String) {
+        remove(SEC + fingerprint)
+        forgetPrefs(fingerprint)
+    }
 
     /**
      * Importa (ou atualiza) chaves públicas, uma a uma: as que não servem são recusadas com o
@@ -186,6 +193,7 @@ class Vault(private val store: Store) {
         remove(PUB + fingerprint)
         remove(CODE + fingerprint)
         setVerified(fingerprint, false)
+        forgetPrefs(fingerprint)
     }
 
     @Synchronized
@@ -328,11 +336,59 @@ class Vault(private val store: Store) {
         return Lock.matches(stored, pin)
     }
 
-    /** Apaga TUDO o que está no cofre: chaves, contactos, códigos, notas e PINs. Não há volta. */
+    /** Apaga TUDO o que está no cofre: chaves, contactos, códigos, notas, PINs e preferências. Não há volta. */
     @Synchronized
     fun wipe() {
         cache.clear()
-        store.names().forEach { store.delete(it) }
+        synchronized(prefsLock) {
+            store.names().forEach { store.delete(it) }
+            prefs = null
+        }
+    }
+
+    // ------------------------------------------------------------------ preferências privadas
+
+    /**
+     * Preferências que dizem com quem e como comunicas: o formato usado com cada contacto, se usas
+     * o código secreto, que chaves já têm backup, o formato escolhido. Ficam aqui, cifradas como o
+     * resto do cofre, e não nas preferências do Android, que estão em claro no telemóvel (numa
+     * extração forense mostrariam os fingerprints das pessoas a quem escreves). As que acabam em
+     * "-<fingerprint>" saem quando esse contacto ou essa chave é apagado. Não vão nos backups.
+     *
+     * Têm um bloqueio próprio e curto, para a interface as poder ler sem esperar pelas operações
+     * longas do cofre. Ficam em memória a partir do primeiro [snapshot].
+     */
+    fun prefs(): Map<String, String> = synchronized(prefsLock) { prefs ?: readPrefs().also { prefs = it } }
+
+    /** Muda preferências privadas (null apaga) e guarda-as logo. */
+    fun setPrefs(changes: Map<String, String?>) {
+        for ((k, v) in changes) {
+            require(isPrefName(k)) { "Nome de preferência inválido." }
+            require(v == null || (v.isNotEmpty() && v.none { it == '\n' || it == '\r' })) { "Valor de preferência inválido." }
+        }
+        synchronized(prefsLock) {
+            val now = prefs()
+            val next = now.toMutableMap()
+            for ((k, v) in changes) if (v == null) next.remove(k) else next[k] = v
+            if (next == now) return
+            if (next.isEmpty()) store.delete(PREFS) else store.write(PREFS, next.toSortedMap().entries.joinToString("\n") { "${it.key}=${it.value}" }.toByteArray())
+            prefs = next
+        }
+    }
+
+    /** Esquece as preferências ligadas a um contacto ou a uma chave tua. */
+    private fun forgetPrefs(fingerprint: String) {
+        val gone = prefs().keys.filter { it.endsWith("-$fingerprint") }
+        if (gone.isNotEmpty()) setPrefs(gone.associateWith { null })
+    }
+
+    /** Um ficheiro estragado só faz perder preferências (o próximo [setPrefs] substitui-o). */
+    private fun readPrefs(): Map<String, String> {
+        val data = runCatching { store.read(PREFS) }.getOrNull() ?: return emptyMap()
+        return String(data, Charsets.UTF_8).lines().mapNotNull { line ->
+            val i = line.indexOf('=')
+            if (i > 0 && i < line.length - 1 && isPrefName(line.substring(0, i))) line.substring(0, i) to line.substring(i + 1) else null
+        }.toMap()
     }
 
     // ------------------------------------------------------------------ backup completo
@@ -476,7 +532,10 @@ class Vault(private val store: Store) {
 
     /** Esquece o que estava em memória (depois de começar um cofre novo). */
     @Synchronized
-    fun clearCache() = cache.clear()
+    fun clearCache() {
+        cache.clear()
+        synchronized(prefsLock) { prefs = null }
+    }
 
     /** A chave privada para backup, incluindo uma que se lê mas não pode ser avaliada agora. */
     fun backupRing(fingerprint: String): PGPSecretKeyRing {
@@ -604,6 +663,11 @@ class Vault(private val store: Store) {
         private const val NOTE = "note-"
         private const val PIN = "pin"
         private const val PANIC = "panic"
+        private const val PREFS = "prefs"
+        private val PREF_NAME = Regex("^[a-z][A-Za-z]*(-[0-9A-F]{40,64})?$")
+
+        /** Nome aceite para uma preferência privada: letras, opcionalmente seguidas de "-<fingerprint>". */
+        fun isPrefName(name: String) = PREF_NAME.matches(name)
         /** O que entra num backup completo (além da lista de verificados). */
         private val KINDS = listOf(SEC, PUB, CODE, NOTE)
     }

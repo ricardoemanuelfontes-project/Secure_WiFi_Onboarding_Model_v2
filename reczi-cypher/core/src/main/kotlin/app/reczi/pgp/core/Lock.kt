@@ -1,6 +1,7 @@
 package app.reczi.pgp.core
 
 import org.bouncycastle.crypto.generators.SCrypt
+import java.nio.CharBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
 
@@ -28,6 +29,15 @@ object Lock {
         return valid && same
     }
 
-    private fun scrypt(pin: CharArray, salt: ByteArray): ByteArray =
-        SCrypt.generate(String(pin).toByteArray(Charsets.UTF_8), salt, 1 shl 14, 8, 1, 32)
+    private fun scrypt(pin: CharArray, salt: ByteArray): ByteArray {
+        // Sem passar por String (que não se pode apagar da memória): os mesmos bytes UTF-8, apagados no fim.
+        val buf = Charsets.UTF_8.encode(CharBuffer.wrap(pin))
+        val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
+        if (buf.hasArray()) buf.array().fill(0)
+        try {
+            return SCrypt.generate(bytes, salt, 1 shl 14, 8, 1, 32)
+        } finally {
+            bytes.fill(0)
+        }
+    }
 }

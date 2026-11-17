@@ -1,6 +1,7 @@
 package app.reczi.pgp
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.KeyguardManager
@@ -73,6 +74,22 @@ import org.bouncycastle.openpgp.PGPSecretKeyRing
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
+
+/**
+ * Protege uma janela da app (a principal e cada diálogo):
+ * - sem capturas nem gravações de ecrã (FLAG_SECURE);
+ * - no Android 12+, sem janelas de outras apps por cima;
+ * - no Android 14+, o conteúdo fica escondido dos serviços de acessibilidade que não são
+ *   ferramentas de acessibilidade. Esses serviços leem tudo o que está no ecrã e são o truque
+ *   preferido do spyware; o FLAG_SECURE não os trava. O TalkBack e outras ferramentas a sério
+ *   continuam a funcionar.
+ */
+internal fun protectWindow(w: android.view.Window?) {
+    w ?: return
+    w.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+    if (Build.VERSION.SDK_INT >= 31) w.setHideOverlayWindows(true)
+    if (Build.VERSION.SDK_INT >= 34) w.decorView.setAccessibilityDataSensitive(View.ACCESSIBILITY_DATA_SENSITIVE_YES)
+}
 
 class MainActivity : Activity() {
     private lateinit var store: KeystoreStore
@@ -196,7 +213,12 @@ class MainActivity : Activity() {
     private fun load(firstTime: Boolean = false, then: () -> Unit = {}) {
         work("A abrir o cofre…", {
             try {
-                if (store.isKeyLost()) Result.failure(VaultKeyLostException()) else Result.success(vault.snapshot())
+                if (store.isKeyLost()) Result.failure(VaultKeyLostException()) else {
+                    // Até à 1.4.2 havia fingerprints em claro fora do cofre. Se falhar, fica para a próxima abertura.
+                    runCatching { movePrefsToVault() }
+                    runCatching { QuickPass(this).moveIntoVault() }
+                    Result.success(vault.snapshot())
+                }
             } catch (e: Exception) {
                 Result.failure<Snapshot>(e)
             }
@@ -303,8 +325,10 @@ class MainActivity : Activity() {
      */
     private fun panic() {
         work("A abrir…", {
-            runCatching { vault.wipe() }
+            // Primeiro a chave do Keystore e os ficheiros, de uma vez: sem a chave, o que sobrar no
+            // armazenamento já não se lê. Depois esquece o que estava em memória.
             store.wipe()
+            runCatching { vault.wipe() }
             vault.clearCache()
             clearClipboard()
             prefs.edit().clear().commit()
@@ -315,6 +339,7 @@ class MainActivity : Activity() {
             loaded = false
             snap = Snapshot(emptyList(), emptyList(), emptyList())
             screens.forEach { it.clearSensitive() }
+            enc.forgetChoices()
             unlocked()
         }
     }
@@ -458,11 +483,51 @@ class MainActivity : Activity() {
     }
 
     /** Chaves privadas de que há registo de backup (ficheiro, papel, ou importadas de um backup). */
-    private fun backedUp(): Set<String> = prefs.getStringSet(PREF_BACKED_UP, emptySet()) ?: emptySet()
+    private fun backedUp(): Set<String> =
+        vaultPrefs().keys.filter { it.startsWith(VP_BACKED_UP) }.map { it.removePrefix(VP_BACKED_UP) }.toSet()
 
-    private fun markBackedUp(fingerprint: String) {
-        prefs.edit().putStringSet(PREF_BACKED_UP, backedUp() + fingerprint).apply()
-        if (loaded && !locked) screens[current].refresh()
+    private fun markBackedUp(fingerprint: String) = markBackedUp(listOf(fingerprint))
+
+    private fun markBackedUp(fingerprints: List<String>) {
+        if (fingerprints.isEmpty()) return
+        setVaultPrefs(fingerprints.map { VP_BACKED_UP + it to "1" }) { if (loaded && !locked) screens[current].refresh() }
+    }
+
+    /**
+     * As preferências que dizem com quem e como comunicas ficam no cofre, cifradas (ver
+     * [Vault.prefs]); nas preferências do Android só ficam opções sem nada de pessoal.
+     */
+    private fun vaultPrefs(): Map<String, String> = runCatching { vault.prefs() }.getOrDefault(emptyMap())
+
+    /** Guarda preferências privadas no cofre, na fila de trabalho (a escrita é cifrada e lenta). */
+    private fun setVaultPrefs(changes: List<Pair<String, String?>>, then: () -> Unit = {}) {
+        worker.execute {
+            runCatching { vault.setPrefs(changes.toMap()) }
+            main.post { if (!isDestroyed) then() }
+        }
+    }
+
+    /**
+     * Até à versão 1.4.2, o formato usado com cada contacto (pelo fingerprint), as chaves com
+     * backup e o formato escolhido ficavam nas preferências do Android, em claro. Passam para o
+     * cofre e só depois saem das preferências. Corre em segundo plano (por isso commit: tem de ficar gravado).
+     */
+    @SuppressLint("ApplySharedPref")
+    private fun movePrefsToVault() {
+        val old = prefs.all.filterKeys {
+            it.startsWith(LEGACY_CONTACT_FORMAT) || it.startsWith(LEGACY_CONTACT_CODE) || it == LEGACY_BACKED_UP || it == LEGACY_FORMAT || it == LEGACY_USE_CODE
+        }
+        if (old.isEmpty()) return
+        val moved = HashMap<String, String?>()
+        for ((k, v) in old) when {
+            k.startsWith(LEGACY_CONTACT_FORMAT) && v is Int -> moved[VP_CONTACT_FORMAT + k.removePrefix(LEGACY_CONTACT_FORMAT)] = v.toString()
+            k.startsWith(LEGACY_CONTACT_CODE) && v == true -> moved[VP_CONTACT_CODE + k.removePrefix(LEGACY_CONTACT_CODE)] = "1"
+            k == LEGACY_BACKED_UP && v is Set<*> -> v.filterIsInstance<String>().forEach { moved[VP_BACKED_UP + it] = "1" }
+            k == LEGACY_FORMAT && v is Int && v != FORMAT_PGP -> moved[VP_FORMAT] = v.toString()
+            k == LEGACY_USE_CODE && v == true -> moved[VP_USE_CODE] = "1"
+        }
+        vault.setPrefs(moved.filterKeys { Vault.isPrefName(it) })
+        prefs.edit().apply { old.keys.forEach { remove(it) } }.commit()
     }
 
     private fun show(i: Int) {
@@ -671,12 +736,7 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ janelas e diálogos
 
-    /** Sem capturas de ecrã e, no Android 12+, sem janelas de outras apps por cima. */
-    private fun secureWindow(w: android.view.Window?) {
-        w ?: return
-        w.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
-        if (Build.VERSION.SDK_INT >= 31) w.setHideOverlayWindows(true)
-    }
+    private fun secureWindow(w: android.view.Window?) = protectWindow(w)
 
     private fun AlertDialog.Builder.showSecure(): AlertDialog {
         val d = create()
@@ -1058,7 +1118,7 @@ class MainActivity : Activity() {
                     chars.fill('\u0000')
                 }
             }) {
-                snap.myKeys.forEach { markBackedUp(it.info.fingerprint) }
+                markBackedUp(snap.myKeys.map { it.info.fingerprint })
                 alert(
                     "Backup completo guardado",
                     "Leva as tuas chaves, os contactos (e quais verificaste), os códigos secretos e as notas. " +
@@ -1073,7 +1133,7 @@ class MainActivity : Activity() {
         if (!Backup.isBackup(bytes)) return keys.importPrivate(bytes)
         askPassphrase("Restaurar backup completo", "Palavra-passe que deste a este backup:") { chars ->
             change("A restaurar…", { try { vault.importBackup(bytes, chars) } finally { chars.fill('\u0000') } }) { r ->
-                snap.myKeys.forEach { markBackedUp(it.info.fingerprint) }
+                markBackedUp(snap.myKeys.map { it.info.fingerprint })
                 alert(
                     "Backup restaurado",
                     "Acrescentado: ${r.keys} chave(s), ${r.contacts} contacto(s), ${r.codes} código(s) secreto(s) e ${r.notes} nota(s).\n\n" +
@@ -1979,7 +2039,9 @@ class MainActivity : Activity() {
         private val formatHint = label("")
         /** Contacto cujo código secreto pode fechar a camada de fora (um só destinatário, com código). */
         private var codeFpr: String? = null
-        private val useCode = CheckBox(this@MainActivity).apply { isChecked = prefs.getBoolean(PREF_USE_CODE, false) }
+        private val useCode = CheckBox(this@MainActivity)
+        /** O formato e o código escolhidos da última vez vêm do cofre, que só se lê depois de aberto. */
+        private var choicesRestored = false
         private val output = textArea("", 5, mono = true).apply { keyListener = null; setTextIsSelectable(true) }
         private val outTitle = heading("Mensagem encriptada")
         private val outNote = label("").apply { visibility = View.GONE }
@@ -2022,10 +2084,11 @@ class MainActivity : Activity() {
             col.addView(compact)
             col.addView(heading("Formato"))
             format.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, FORMATS.map { it.label })
-            format.setSelection(formatPosition(prefs.getInt(PREF_FORMAT, FORMAT_PGP)))
             format.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, v: View?, position: Int, id: Long) {
-                    prefs.edit().putInt(PREF_FORMAT, FORMATS[position].id).apply()
+                    // Só se guarda o que muda (o "PGP normal" é não ter nada guardado).
+                    val want = FORMATS[position].id.takeIf { it != FORMAT_PGP }?.toString()
+                    if (loaded && vaultPrefs()[VP_FORMAT] != want) setVaultPrefs(listOf(VP_FORMAT to want))
                     updateCode()
                     formatHint.text = FORMATS[position].hint
                 }
@@ -2033,7 +2096,7 @@ class MainActivity : Activity() {
             }
             col.addView(format)
             col.addView(formatHint)
-            useCode.setOnClickListener { prefs.edit().putBoolean(PREF_USE_CODE, useCode.isChecked).apply() }
+            useCode.setOnClickListener { setVaultPrefs(listOf(VP_USE_CODE to if (useCode.isChecked) "1" else null)) }
             col.addView(useCode)
             col.addView(primaryButton("Encriptar") { encrypt() })
             col.addView(button("Encriptar um ficheiro ou fotografia…") { pickFile() })
@@ -2064,11 +2127,32 @@ class MainActivity : Activity() {
             useCode.visibility = if (codeFpr != null) View.VISIBLE else View.GONE
         }
 
+        /** O formato e o código escolhidos da última vez (uma vez, depois de o cofre abrir). */
+        private fun restoreChoices() {
+            if (choicesRestored || !loaded) return
+            choicesRestored = true
+            val p = vaultPrefs()
+            format.setSelection(formatPosition(p[VP_FORMAT]?.toIntOrNull() ?: FORMAT_PGP))
+            useCode.isChecked = p[VP_USE_CODE] == "1"
+        }
+
+        /** PIN de pânico: volta às escolhas de uma app nova (nada do que estava escolhido fica à vista). */
+        fun forgetChoices() {
+            choicesRestored = false
+            format.setSelection(formatPosition(FORMAT_PGP))
+            useCode.isChecked = false
+            compact.isChecked = false
+            sign.isEnabled = true
+            preselect = null
+        }
+
         /** Prepara uma resposta: fica escolhido só este destinatário. */
         fun replyTo(fingerprint: String) {
+            restoreChoices()
             // O formato e a opção do código secreto usados da última vez com este contacto.
-            prefs.getInt(PREF_CONTACT_FORMAT + fingerprint, -1).takeIf { it >= 0 }?.let { format.setSelection(formatPosition(it)) }
-            useCode.isChecked = prefs.getBoolean(PREF_CONTACT_CODE + fingerprint, false)
+            val p = vaultPrefs()
+            p[VP_CONTACT_FORMAT + fingerprint]?.toIntOrNull()?.let { format.setSelection(formatPosition(it)) }
+            useCode.isChecked = p[VP_CONTACT_CODE + fingerprint] == "1"
             preselect = setOf(fingerprint)
             draft.setText("")
             output.setText("")
@@ -2076,6 +2160,7 @@ class MainActivity : Activity() {
         }
 
         override fun refresh() {
+            restoreChoices()
             val checked = preselect ?: boxes.filter { it.first.isChecked }.map { it.second }.toSet()
             preselect = null
             recipients.removeAllViews()
@@ -2142,7 +2227,7 @@ class MainActivity : Activity() {
             // Com um só contacto (além de ti), lembra o formato e o código para a próxima conversa com ele.
             val mine = snap.myKeys.map { it.info.fingerprint }.toSet()
             to.filterNot { it in mine }.singleOrNull()?.let { other ->
-                prefs.edit().putInt(PREF_CONTACT_FORMAT + other, fmt.id).putBoolean(PREF_CONTACT_CODE + other, useCode.isChecked).apply()
+                setVaultPrefs(listOf(VP_CONTACT_FORMAT + other to fmt.id.toString(), VP_CONTACT_CODE + other to if (useCode.isChecked) "1" else null))
             }
             val run = { chars: CharArray? ->
                 work("A encriptar…", {
@@ -2797,11 +2882,20 @@ class MainActivity : Activity() {
         const val TAB_KEYS = 3
         const val TAB_SETTINGS = 4
         const val TAB_SIGN = 5
-        const val PREF_CONTACT_FORMAT = "fmt-"
-        const val PREF_CONTACT_CODE = "usecode-"
         const val PREF_WELCOMED = "welcomed"
         const val PREF_STEPS_HIDDEN = "stepsHidden"
-        const val PREF_BACKED_UP = "backedUp"
+        // Preferências privadas, no cofre (cifradas): dizem com quem e como comunicas.
+        const val VP_CONTACT_FORMAT = "fmt-"
+        const val VP_CONTACT_CODE = "usecode-"
+        const val VP_BACKED_UP = "backedup-"
+        const val VP_FORMAT = "format"
+        const val VP_USE_CODE = "useCode"
+        // Onde ficavam até à 1.4.2, em claro nas preferências do Android (só para as passar para o cofre).
+        const val LEGACY_CONTACT_FORMAT = "fmt-"
+        const val LEGACY_CONTACT_CODE = "usecode-"
+        const val LEGACY_BACKED_UP = "backedUp"
+        const val LEGACY_FORMAT = "format"
+        const val LEGACY_USE_CODE = "useCode"
         const val HOW_IT_WORKS =
             "O Reczi cypher encripta mensagens de forma que só o destinatário as consegue ler.\n\n" +
                 "Cada pessoa tem uma chave com duas partes. A PÚBLICA é como um cadeado aberto: dás a quem quiseres, e quem a tiver pode " +
@@ -2839,8 +2933,6 @@ class MainActivity : Activity() {
         const val KIND_PRIVATE = "private"
         const val KIND_PUBLIC = "public"
         const val KIND_MESSAGE = "message"
-        const val PREF_FORMAT = "format"
-        const val PREF_USE_CODE = "useCode"
         // Ids guardados nas preferências: nunca mudar os números (o 2 era "palavras", que já não se oferece).
         const val FORMAT_PGP = 0
         const val FORMAT_CODE = 1

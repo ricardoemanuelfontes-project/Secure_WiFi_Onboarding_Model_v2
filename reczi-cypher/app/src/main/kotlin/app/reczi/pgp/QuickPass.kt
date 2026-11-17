@@ -6,7 +6,6 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.CharBuffer
@@ -26,11 +25,13 @@ import javax.crypto.spec.GCMParameterSpec
  * chave se for acrescentada uma impressão digital nova ou se o bloqueio de ecrã for tirado:
  * nesse caso a palavra-passe guardada deixa de servir e volta a escrever-se.
  *
- * Os nomes começam por "vault" (ficheiros) e "reczi-pgp-vault" (Keystore) para o PIN de pânico
- * os apagar juntamente com o cofre ([KeystoreStore.wipe]). Só existe em Android 11 ou mais recente.
+ * O que fica guardado vai para dentro do cofre ([KeystoreStore], entrada "quick-<fingerprint>"),
+ * cifrado também com a chave do cofre: assim o fingerprint não aparece no nome de nenhum ficheiro,
+ * e o PIN de pânico apaga-o com o resto. A chave do Keystore chama-se "reczi-pgp-vault-quick" pela
+ * mesma razão. Só existe em Android 11 ou mais recente.
  */
 class QuickPass(private val context: Context) {
-    private val dir = File(context.noBackupFilesDir, "vault-quick")
+    private val store get() = Vaults.store(context)
 
     /** true se este telemóvel suporta o desbloqueio (Android 11+ com bloqueio de ecrã definido). */
     fun available(): Boolean {
@@ -39,10 +40,28 @@ class QuickPass(private val context: Context) {
         return bm.canAuthenticate(AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
     }
 
-    fun has(fingerprint: String): Boolean = file(fingerprint).exists()
+    fun has(fingerprint: String): Boolean = runCatching { store.contains(entry(fingerprint)) }.getOrDefault(false)
 
     fun forget(fingerprint: String) {
-        file(fingerprint).delete()
+        runCatching { store.delete(entry(fingerprint)) }
+    }
+
+    /**
+     * Até à versão 1.4.2 cada palavra-passe guardada ficava num ficheiro com o fingerprint no nome
+     * (noBackupFilesDir/vault-quick). Passam para o cofre; um ficheiro que não passe fica onde está.
+     */
+    fun moveIntoVault() {
+        val old = File(context.noBackupFilesDir, "vault-quick")
+        val files = old.listFiles() ?: return
+        for (f in files) {
+            when {
+                f.name.endsWith(".tmp") -> f.delete()
+                FPR.matches(f.name) -> runCatching {
+                    if (!store.contains(entry(f.name))) store.write(entry(f.name), f.readBytes())
+                }.onSuccess { f.delete() }
+            }
+        }
+        old.delete() // só se ficou vazia
     }
 
     /** Cifra pronta a guardar uma palavra-passe; só funciona depois de autorizada pelo Android. */
@@ -53,7 +72,7 @@ class QuickPass(private val context: Context) {
      * invalidou a chave (nesse caso o que estava guardado é apagado).
      */
     fun decrypter(fingerprint: String): Cipher? {
-        val data = runCatching { file(fingerprint).readBytes() }.getOrNull() ?: return null
+        val data = runCatching { store.read(entry(fingerprint)) }.getOrNull() ?: return null
         if (data.size < 1 + IV_LEN + TAG_LEN / 8 || data[0] != FORMAT) { forget(fingerprint); return null }
         return try {
             val key = existingKey() ?: throw IOException("sem chave")
@@ -73,19 +92,7 @@ class QuickPass(private val context: Context) {
             val sealed = authorized.doFinal(plain)
             val iv = authorized.iv
             check(iv.size == IV_LEN)
-            dir.mkdirs()
-            val target = file(fingerprint)
-            val tmp = File(dir, "$fingerprint.tmp")
-            FileOutputStream(tmp).use { out ->
-                out.write(byteArrayOf(FORMAT))
-                out.write(iv)
-                out.write(sealed)
-                out.fd.sync()
-            }
-            if (!tmp.renameTo(target)) {
-                tmp.delete()
-                throw IOException("Não foi possível guardar.")
-            }
+            store.write(entry(fingerprint), byteArrayOf(FORMAT) + iv + sealed)
         } finally {
             plain.fill(0)
         }
@@ -93,7 +100,7 @@ class QuickPass(private val context: Context) {
 
     /** Abre a palavra-passe com uma cifra já autorizada por [decrypter]. Quem a recebe tem de a apagar. */
     fun open(fingerprint: String, authorized: Cipher): CharArray {
-        val data = file(fingerprint).readBytes()
+        val data = store.read(entry(fingerprint)) ?: throw IOException("Não há palavra-passe guardada.")
         authorized.updateAAD(fingerprint.toByteArray())
         val plain = authorized.doFinal(data, 1 + IV_LEN, data.size - 1 - IV_LEN)
         try {
@@ -113,9 +120,9 @@ class QuickPass(private val context: Context) {
         return out
     }
 
-    private fun file(fingerprint: String): File {
+    private fun entry(fingerprint: String): String {
         require(FPR.matches(fingerprint)) { "impressão digital inválida" }
-        return File(dir, fingerprint)
+        return "quick-$fingerprint"
     }
 
     private fun existingKey(): SecretKey? {
@@ -131,7 +138,7 @@ class QuickPass(private val context: Context) {
                 return key
             } catch (e: Exception) {
                 KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(ALIAS)
-                dir.listFiles()?.forEach { it.delete() }
+                store.names().filter { it.startsWith("quick-") }.forEach { store.delete(it) }
             }
         }
         val spec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)

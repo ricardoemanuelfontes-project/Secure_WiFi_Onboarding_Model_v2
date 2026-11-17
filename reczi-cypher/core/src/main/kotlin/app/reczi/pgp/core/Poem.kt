@@ -110,7 +110,7 @@ internal object Poem {
 
     fun write(raw: ByteArray): String {
         val out = StringBuilder()
-        val random = kotlin.random.Random.Default
+        val random = Prose.SECURE
         var i = 0
         var verse = 0
         var last = -1

@@ -2,6 +2,7 @@ package app.reczi.pgp.core
 
 import java.text.Normalizer
 import kotlin.random.Random
+import kotlin.random.asKotlinRandom
 
 /**
  * Motor dos disfarces em texto corrido (crónica, diário de viagem, relato de futebol, letra de rap).
@@ -183,7 +184,7 @@ internal class Prose(
 
     // ---------------------------------------------------------------------------------- escrever
 
-    fun write(raw: ByteArray, random: Random = Random.Default): String {
+    fun write(raw: ByteArray, random: Random = SECURE): String {
         val bits = Bits(raw)
         val pieces = ArrayList<String>()
         var last = -1
@@ -334,6 +335,13 @@ internal class Prose(
     }
 
     companion object {
+        /**
+         * As escolhas que não levam dados (molde, parágrafos, abertura, enchimento do fim) também
+         * vêm de um gerador criptográfico: não revelam nada, mas assim não há nenhum gerador fraco
+         * na app. Os testes passam um gerador com semente, para serem repetíveis.
+         */
+        val SECURE: Random = java.security.SecureRandom().asKotlinRandom()
+
         private val ARTICLES = setOf("o", "a", "os", "as", "um", "uma")
 
         private val CONTRACTIONS = mapOf(

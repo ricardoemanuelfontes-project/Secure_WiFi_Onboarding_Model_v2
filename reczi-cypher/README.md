@@ -108,7 +108,9 @@ A palavra-passe fica cifrada (AES-256-GCM) com uma chave do Keystore que exige a
 dono em cada utilização (impressão digital de classe forte ou o bloqueio do telemóvel), e só com o
 telemóvel desbloqueado. Se se juntar uma impressão digital nova ou se tirar o bloqueio de ecrã, o
 Android invalida essa chave: a palavra-passe guardada deixa de servir e escreve-se de novo. Perder
-isto não faz perder nada (as chaves continuam no cofre). O PIN de pânico apaga-a também. Não usa o
+isto não faz perder nada (as chaves continuam no cofre). Fica guardada dentro do cofre (cifrada
+também com a chave dele), por isso nenhum nome de ficheiro tem o fingerprint da chave. O PIN de
+pânico apaga-a também. Não usa o
 PIN da app, de propósito: um PIN de 4 algarismos protegeria a palavra-passe muito menos do que o
 chip de segurança do telemóvel.
 
@@ -194,7 +196,20 @@ Limites do disfarce sem código secreto, para não haver ilusões:
      (StrongBox quando existe) que não sai do chip de segurança do telemóvel.
 - Os dados ficam em `noBackupFilesDir` e estão excluídos de cópias de segurança e de transferências
   para outro telemóvel. **Se desinstalares a app, as chaves desaparecem: faz backup.**
-- **Capturas de ecrã bloqueadas** (`FLAG_SECURE`).
+- **Nada de pessoal fora do cofre (1.4.3)**. Os nomes dos ficheiros do cofre são aleatórios
+  (`v2-<aleatório>`); o nome de cada entrada (que tem o fingerprint do contacto ou da chave) está
+  lá dentro, cifrado, e um índice cifrado liga uns aos outros. Quem copiar os ficheiros não fica a
+  saber de quem são as chaves, com quem há código secreto, nem se há PIN de pânico: só quantos
+  ficheiros há. O formato usado com cada contacto, as chaves com backup e o formato escolhido
+  também ficam no cofre (até à 1.4.2 estavam em claro nas preferências do Android). Nas
+  preferências do Android só ficam opções sem nada de pessoal (modo compacto, bloqueio por
+  impressão digital, contador de PIN errado). Os cofres antigos passam para o formato novo na
+  primeira abertura.
+- **Capturas de ecrã bloqueadas** (`FLAG_SECURE`), na janela principal e em cada diálogo.
+- **Serviços de acessibilidade (Android 14+)**: o conteúdo da app fica escondido dos serviços de
+  acessibilidade que não são ferramentas de acessibilidade. Esses serviços conseguem ler tudo o que
+  está no ecrã (é o truque mais usado pelo spyware no Android) e o bloqueio de capturas não os
+  trava. O TalkBack e as outras ferramentas de acessibilidade continuam a funcionar.
 - **Teclado e área de transferência**: o teclado não aprende o que escreves, e o preenchimento
   automático está desligado. O texto desencriptado não é selecionável. Ao copiá-lo pelo botão, é
   marcado como sensível e apagado da área de transferência após ~45 s, por um alarme do sistema que
@@ -205,8 +220,62 @@ Limites do disfarce sem código secreto, para não haver ilusões:
 - **Cofre robusto**: um ficheiro estragado não impede o acesso ao resto. Se o telemóvel perder a
   chave do Keystore, a app avisa e não apaga nada.
 - **Mensagens em claro** são apagadas do ecrã quando ficas mais de 5 minutos fora da app.
+- **Memória**: as palavras-passe e os PINs passam em arrays que se apagam logo a seguir. Em
+  Kotlin/Java não há forma garantida de apagar tudo da RAM (o sistema copia objetos e as
+  bibliotecas guardam as chaves em números que não se apagam); o Android isola a memória de cada app.
+- **Aleatório só criptográfico**: chaves, nonces e sais vêm do `SecureRandom`, e também as
+  escolhas que não protegem nada (a ordem dos moldes do disfarce, os parágrafos, o enchimento do
+  fim). Um teste lê o código-fonte e recusa qualquer outro gerador.
 - **Criptografia**: feita pelo [PGPainless](https://pgpainless.org) 1.7.8 / BouncyCastle 1.82.
   Não há criptografia própria no OpenPGP. Os códigos QR usam o ZXing 3.5.3.
+- **Bibliotecas conferidas na compilação**: o Gradle descarregado tem de ter o SHA-256 oficial, e
+  cada biblioteca (da app, do núcleo, dos testes e das ferramentas de compilação) tem o SHA-256 em
+  `gradle/verification-metadata.xml`. Uma biblioteca adulterada faz a compilação parar.
+
+## Modelo de ameaça
+
+Para que serve a app e para que não serve. É isto que uma auditoria compara com o código. A app
+ainda não teve uma auditoria independente.
+
+**Protege contra:**
+
+- **Quem interceta as mensagens** (rede, operador, servidores da app de mensagens): só vê texto
+  cifrado com OpenPGP. O segredo depende só do OpenPGP; sem código secreto, o disfarce não
+  acrescenta segurança.
+- **Filtros automáticos e quem lê de passagem**: os formatos disfarçados não têm "BEGIN PGP" nem
+  base64 e leem-se como texto. Com o código secreto, sem a frase nem se percebe que há PGP por baixo.
+- **Quem pega no telemóvel desbloqueado**: PIN da app ou impressão digital, bloqueio ao fim de
+  1 minuto fora, e o texto em claro sai do ecrã ao fim de 5 minutos fora.
+- **Coação para abrir a app**: o PIN de pânico destrói as chaves do Keystore (o que sobrar no
+  armazenamento fica ilegível para sempre) e a app abre vazia, como nova. O ecrã diz "A abrir…"
+  como numa abertura normal, e o tempo de resposta é o mesmo.
+- **Cópia dos ficheiros da app** (extração forense): o cofre só se abre com a chave do chip de
+  segurança, que não sai do telemóvel; os nomes dos ficheiros não dizem nada; as chaves privadas
+  têm ainda a palavra-passe OpenPGP. Nada vai para cópias de segurança.
+- **Outras apps no mesmo telemóvel**: as proteções descritas em Segurança (capturas, janelas por
+  cima, teclado, preenchimento automático, área de transferência, acessibilidade).
+- **Fugas pela rede**: a app não tem permissão de Internet, por isso o Android não a deixa abrir
+  ligações.
+- **Bibliotecas adulteradas na compilação**: conferidas por SHA-256.
+
+**Não protege contra:**
+
+- **Um telemóvel comprometido** (root, spyware com controlo total, ou um serviço de acessibilidade
+  que se declare ferramenta de acessibilidade): vê o que tu vês e o que escreves.
+- **O teclado**: um teclado de terceiros pode registar o que escreves. O pedido para não aprender
+  é só um pedido; usa um teclado de confiança.
+- **Análise estatística do disfarce**: quem souber o que procura percebe que o texto foi gerado (as
+  palavras saem uniformes demais). É camuflagem, não esteganografia indetetável.
+- **Metadados fora da app**: com quem trocas mensagens, quando e quanto, na app de mensagens que
+  usas.
+- **Desbloqueio forçado com o dedo**: se ligares a impressão digital, alguém pode obrigar-te a
+  usá-la, e o PIN de pânico nunca chega a ser pedido. Com esse risco, usa só o PIN da app.
+- **Quem conhece o Reczi**: a app é pública, por isso quem a conhece sabe que existe PIN de pânico.
+  Garante-se que os dados não se recuperam, não que ninguém desconfie.
+- **Frases fracas no código secreto**: o sal é igual para todos, por isso uma frase comum pode ser
+  testada contra muitas mensagens de uma vez. Usa uma frase longa e pessoal.
+- **Perder o telemóvel sem backup**: as chaves vão com ele.
+- **Verificar o destinatário errado**: confirmar o fingerprint de cada contacto é contigo.
 
 ## Estrutura
 
@@ -216,7 +285,8 @@ Limites do disfarce sem código secreto, para não haver ilusões:
   GnuPG 2.4 nos dois sentidos.
 - `app/`: a interface Android (só a framework, sem AndroidX) e o armazenamento no Keystore.
   Tem testes da interface (Robolectric, correm no computador sem telemóvel): criar chave,
-  encriptar para ti e ler, assinar e verificar, o menu e os submenus das chaves. Só os testes usam
+  encriptar para ti e ler, assinar e verificar, o menu e os submenus das chaves, o cofre (nomes
+  dos ficheiros, passagem dos cofres antigos, ficheiros estragados) e a acessibilidade. Só os testes usam
   AndroidX; o APK não leva nenhuma dependência AndroidX.
 
 ## Compilar
@@ -224,10 +294,18 @@ Limites do disfarce sem código secreto, para não haver ilusões:
 Precisa de JDK 17+ e do SDK do Android (plataforma 35).
 
 ```bash
-cd core && ../gradlew test        # testes do núcleo (precisa do gpg instalado para os de interoperabilidade)
-cd .. && ./gradlew :app:testDebugUnitTest   # testes da interface
+./gradlew :core:test              # testes do núcleo (precisa do gpg instalado para os de interoperabilidade)
+./gradlew :app:testDebugUnitTest  # testes da interface
 ./gradlew :app:assembleRelease
 # APK em app/build/outputs/apk/release/app-release.apk
+```
+
+Compila sempre a partir da pasta de cima (como acima): é aí que está a verificação das bibliotecas
+(`gradle/verification-metadata.xml`), que também cobre o núcleo. Ao mudar uma biblioteca, atualiza
+as somas e confere o que mudou antes de o guardar:
+
+```bash
+./gradlew --write-verification-metadata sha256 clean :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest :app:lintDebug :core:test
 ```
 
 A assinatura usa a chave `../reczi-signing/reczi-release.p12`, fora do projeto (ou outra com

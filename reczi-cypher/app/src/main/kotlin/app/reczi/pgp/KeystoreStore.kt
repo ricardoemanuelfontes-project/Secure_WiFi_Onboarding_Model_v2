@@ -9,6 +9,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.KeyStore
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -18,9 +19,16 @@ import javax.crypto.spec.GCMParameterSpec
 class VaultKeyLostException : IOException("A chave de proteção do cofre deste telemóvel desapareceu.")
 
 /**
- * Guarda cada ficheiro do cofre cifrado com AES-256-GCM, com uma chave que vive no
- * Android Keystore (no chip de segurança do telemóvel, quando existe) e nunca sai de lá.
- * Os ficheiros ficam em noBackupFilesDir, que o Android nunca inclui em cópias de segurança.
+ * Guarda cada entrada do cofre cifrada com AES-256-GCM, com uma chave que vive no Android Keystore
+ * (no chip de segurança do telemóvel, quando existe) e nunca sai de lá. Os ficheiros ficam em
+ * noBackupFilesDir, que o Android nunca inclui em cópias de segurança.
+ *
+ * Os nomes das entradas dizem muito (o fingerprint de cada contacto, se há código secreto com ele,
+ * se há PIN de pânico), por isso não aparecem nos nomes dos ficheiros: cada entrada fica num
+ * ficheiro com nome aleatório, com o nome dela lá dentro, cifrado, e um índice cifrado liga uns
+ * aos outros. Quem copiar a pasta só vê ficheiros "v2-<aleatório>" e quantos são. Até à versão
+ * 1.4.2 o nome do ficheiro era o nome da entrada; esses ficheiros passam para o formato novo na
+ * primeira abertura.
  *
  * As chaves privadas já estão protegidas pela palavra-passe OpenPGP; esta é uma segunda
  * camada que liga os dados a este telemóvel.
@@ -34,58 +42,83 @@ class KeystoreStore internal constructor(context: Context, testKey: SecretKey?) 
     private val aliasFile = File(base, "vault-alias")
     /** Só nos testes (que não têm o Keystore do Android) a chave vem de fora. */
     private var key: SecretKey? = testKey
+    private val testMode = testKey != null
+    /** Nome de cada entrada -> nome do ficheiro (o índice), lido na primeira utilização. */
+    private var entries: LinkedHashMap<String, String>? = null
+    /** Ficheiros do formato antigo que não se conseguiram ler: ficam como estão e aparecem como estragados. */
+    private val legacy = HashMap<String, String>()
+    private val random = SecureRandom()
 
     private fun alias(): String = aliasFile.takeIf { it.exists() }?.readText()?.trim()?.ifEmpty { null } ?: DEFAULT_ALIAS
 
     @Synchronized
-    override fun names(): List<String> = dir.list()?.filter { NAME.matches(it) }?.sorted() ?: emptyList()
+    override fun names(): List<String> {
+        val idx = index()
+        return (idx.keys + legacy.keys).sorted()
+    }
+
+    /** true se há uma entrada com este nome (sem a decifrar). */
+    @Synchronized
+    fun contains(name: String): Boolean {
+        val idx = index()
+        return name in legacy || idx[name]?.let { File(dir, it).exists() } == true
+    }
 
     @Synchronized
     override fun read(name: String): ByteArray? {
-        val f = file(name)
+        checkName(name)
+        val idx = index()
+        legacy[name]?.let { return openLegacy(File(dir, it), name) }
+        val f = File(dir, idx[name] ?: return null)
         if (!f.exists()) return null
-        val data = f.readBytes()
-        if (data.size < 1 + IV_LEN + TAG_LEN / 8 || data[0] != FORMAT) throw IOException("Ficheiro do cofre inválido.")
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_LEN, data, 1, IV_LEN))
-        cipher.updateAAD(name.toByteArray())
-        return cipher.doFinal(data, 1 + IV_LEN, data.size - 1 - IV_LEN)
+        val (inside, data) = openEntry(f)
+        // Um ficheiro posto no lugar de outro decifra, mas traz o nome errado.
+        if (inside != name) throw IOException("Ficheiro do cofre trocado.")
+        return data
     }
 
     @Synchronized
     override fun write(name: String, data: ByteArray) {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key()) // o Keystore gera o IV
-        cipher.updateAAD(name.toByteArray()) // impede trocar o conteúdo entre ficheiros
-        val sealed = cipher.doFinal(data)
-        val iv = cipher.iv
-        check(iv.size == IV_LEN)
-        // Escrita atómica: ficheiro temporário, sincronizado com o disco, depois renomeado.
-        val target = file(name)
-        val tmp = File(dir, "$name.tmp")
-        FileOutputStream(tmp).use { out ->
-            out.write(byteArrayOf(FORMAT))
-            out.write(iv)
-            out.write(sealed)
-            out.fd.sync()
+        checkName(name)
+        val idx = index()
+        idx[name]?.let { file ->
+            sealEntry(file, name, data) // substitui o ficheiro de uma vez (temporário + mudar o nome)
+            return
         }
-        if (!tmp.renameTo(target)) {
-            tmp.delete()
-            throw IOException("Não foi possível guardar no cofre.")
+        val file = newFileName()
+        sealEntry(file, name, data)
+        idx[name] = file
+        try {
+            saveIndex(idx)
+        } catch (e: Exception) {
+            idx.remove(name)
+            File(dir, file).delete()
+            throw e
         }
+        legacy.remove(name)?.let { File(dir, it).delete() }
     }
 
     @Synchronized
     override fun delete(name: String) {
-        file(name).delete()
+        checkName(name)
+        val idx = index()
+        legacy.remove(name)?.let { File(dir, it).delete() }
+        val file = idx[name] ?: return
+        // Primeiro o ficheiro: se a app parar a meio, o índice aponta para nada, que é o mesmo que apagado.
+        File(dir, file).delete()
+        idx.remove(name)
+        saveIndex(idx)
     }
 
-    /** Muda o nome do ficheiro para fora do cofre (fica em noBackupFilesDir/vault-avariados). */
+    /** Põe o ficheiro de lado (em noBackupFilesDir/vault-avariados, com um nome sem nada de pessoal). */
     @Synchronized
     override fun quarantine(name: String) {
-        val bad = File(base, "vault-avariados").apply { mkdirs() }
-        val f = file(name)
-        if (f.exists() && !f.renameTo(File(bad, "$name.${System.currentTimeMillis()}"))) f.delete()
+        checkName(name)
+        val idx = index()
+        legacy.remove(name)?.let { return moveAside(File(dir, it)) }
+        val file = idx.remove(name) ?: return
+        saveIndex(idx)
+        moveAside(File(dir, file))
     }
 
     /**
@@ -102,6 +135,8 @@ class KeystoreStore internal constructor(context: Context, testKey: SecretKey?) 
         dir.mkdirs()
         aliasFile.writeText("$DEFAULT_ALIAS-$stamp")
         key = null
+        entries = null
+        legacy.clear()
     }
 
     /**
@@ -111,13 +146,16 @@ class KeystoreStore internal constructor(context: Context, testKey: SecretKey?) 
      */
     @Synchronized
     fun wipe() {
-        key = null
+        // Nos testes não há Keystore: destruir a chave é passar a usar outra.
+        key = if (testMode) KeyGenerator.getInstance("AES").apply { init(256) }.generateKey() else null
         runCatching {
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             ks.aliases().toList().filter { it.startsWith(DEFAULT_ALIAS) }.forEach { ks.deleteEntry(it) }
         }
         base.listFiles()?.filter { it.name.startsWith("vault") }?.forEach { it.deleteRecursively() }
         dir.mkdirs()
+        entries = null
+        legacy.clear()
     }
 
     /** true se há ficheiros no cofre mas a chave do Keystore que os protegia desapareceu. */
@@ -125,12 +163,185 @@ class KeystoreStore internal constructor(context: Context, testKey: SecretKey?) 
     fun isKeyLost(): Boolean {
         if (key != null) return false
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        return ks.getKey(alias(), null) == null && names().isNotEmpty()
+        return ks.getKey(alias(), null) == null && hasFiles()
     }
 
-    private fun file(name: String): File {
-        require(NAME.matches(name)) { "nome inválido" }
-        return File(dir, name)
+    // ------------------------------------------------------------------ índice e ficheiros
+
+    private fun checkName(name: String) = require(NAME.matches(name)) { "nome inválido" }
+
+    /** Há alguma coisa guardada (sem precisar da chave para o saber). */
+    private fun hasFiles(): Boolean = dir.listFiles()?.any { !it.name.endsWith(".tmp") } == true
+
+    private fun newFileName(): String {
+        while (true) {
+            val name = "v2-" + ByteArray(16).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) }
+            if (!File(dir, name).exists()) return name
+        }
+    }
+
+    /**
+     * O índice (nome de cada entrada -> ficheiro). Na primeira utilização: lê-o (ou refá-lo a partir
+     * dos ficheiros, se faltar ou estiver estragado), põe de lado ficheiros de escritas que não
+     * chegaram ao fim e passa os ficheiros do formato antigo para o novo.
+     */
+    private fun index(): LinkedHashMap<String, String> {
+        entries?.let { return it }
+        val files = dir.listFiles().orEmpty().toList()
+        files.filter { it.name.endsWith(".tmp") }.forEach { it.delete() } // escritas interrompidas
+        val indexFile = File(dir, INDEX)
+        val idx = LinkedHashMap<String, String>()
+        var changed = false
+        val stored = if (indexFile.exists()) {
+            try {
+                parseIndex(openSealed(indexFile))
+            } catch (e: VaultKeyLostException) {
+                throw e
+            } catch (e: Exception) {
+                null // estragado: refaz-se a partir dos ficheiros
+            }
+        } else {
+            null
+        }
+        val onDisk = files.filter { ENTRY.matches(it.name) }
+        if (stored != null) {
+            idx.putAll(stored)
+            // Entradas cujo ficheiro desapareceu (a app parou a meio de apagar): saem do índice.
+            changed = idx.values.removeAll { !File(dir, it).exists() }
+            // Ficheiros que o índice não conhece: escritas que não chegaram ao fim. Ficam de lado.
+            val known = idx.values.toSet()
+            onDisk.filter { it.name !in known }.forEach { moveAside(it) }
+        } else {
+            // Cada ficheiro sabe o seu nome: o índice refaz-se. Repetidos ou ilegíveis ficam de lado.
+            val names = onDisk.sortedByDescending { it.lastModified() }.map { f ->
+                f to try {
+                    openEntry(f).first
+                } catch (e: VaultKeyLostException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            // Nenhum se lê: o problema é a chave, não os ficheiros. Não se mexe em nada.
+            if (names.isNotEmpty() && names.all { it.second == null }) throw IOException("Os ficheiros do cofre não se conseguem ler.")
+            for ((f, name) in names) {
+                if (name == null || name in idx) moveAside(f) else idx[name] = f.name
+            }
+            changed = idx.isNotEmpty() || indexFile.exists()
+        }
+        // Formato antigo (até à 1.4.2): o nome do ficheiro era o nome da entrada.
+        legacy.clear()
+        val migrated = mutableListOf<File>()
+        for (f in files.filter { LEGACY.matches(it.name) }) {
+            val name = f.name
+            if (name in idx) {
+                migrated += f // já tinha passado para o formato novo
+                continue
+            }
+            val data = try {
+                openLegacy(f, name)
+            } catch (e: VaultKeyLostException) {
+                throw e
+            } catch (e: Exception) {
+                legacy[name] = name // ilegível: fica como está
+                continue
+            }
+            val file = newFileName()
+            sealEntry(file, name, data)
+            idx[name] = file
+            migrated += f
+            changed = true
+        }
+        entries = idx
+        if (changed) saveIndex(idx)
+        // Só depois de o índice novo estar guardado.
+        migrated.forEach { it.delete() }
+        return idx
+    }
+
+    private fun saveIndex(idx: Map<String, String>) =
+        writeSealed(INDEX, idx.entries.joinToString("\n") { "${it.key}\t${it.value}" }.toByteArray(Charsets.UTF_8))
+
+    private fun parseIndex(data: ByteArray): Map<String, String> =
+        String(data, Charsets.UTF_8).lines().filter { it.isNotEmpty() }.associate { line ->
+            val (name, file) = line.split('\t').also { if (it.size != 2) throw IOException("Índice do cofre inválido.") }
+            if (!NAME.matches(name) || !ENTRY.matches(file)) throw IOException("Índice do cofre inválido.")
+            name to file
+        }
+
+    /** Uma entrada: o nome dela (2 bytes de tamanho + UTF-8) e os dados, tudo cifrado. */
+    private fun sealEntry(file: String, name: String, data: ByteArray) {
+        val n = name.toByteArray(Charsets.UTF_8)
+        val plain = ByteArray(2 + n.size + data.size)
+        plain[0] = (n.size shr 8).toByte()
+        plain[1] = n.size.toByte()
+        n.copyInto(plain, 2)
+        data.copyInto(plain, 2 + n.size)
+        try {
+            writeSealed(file, plain)
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    private fun openEntry(f: File): Pair<String, ByteArray> {
+        val plain = openSealed(f)
+        try {
+            if (plain.size < 2) throw IOException("Ficheiro do cofre inválido.")
+            val n = ((plain[0].toInt() and 0xff) shl 8) or (plain[1].toInt() and 0xff)
+            if (plain.size < 2 + n) throw IOException("Ficheiro do cofre inválido.")
+            return String(plain, 2, n, Charsets.UTF_8) to plain.copyOfRange(2 + n, plain.size)
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    /** Cifra e grava de uma vez: ficheiro temporário, sincronizado com o disco, depois renomeado. */
+    private fun writeSealed(file: String, plain: ByteArray) {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, key()) // o Keystore gera o IV
+        cipher.updateAAD(file.toByteArray()) // o conteúdo fica preso a este ficheiro
+        val sealed = cipher.doFinal(plain)
+        val iv = cipher.iv
+        check(iv.size == IV_LEN)
+        val target = File(dir, file)
+        val tmp = File(dir, "$file.tmp")
+        FileOutputStream(tmp).use { out ->
+            out.write(byteArrayOf(FORMAT))
+            out.write(iv)
+            out.write(sealed)
+            out.fd.sync()
+        }
+        if (!tmp.renameTo(target)) {
+            tmp.delete()
+            throw IOException("Não foi possível guardar no cofre.")
+        }
+    }
+
+    private fun openSealed(f: File): ByteArray {
+        val data = f.readBytes()
+        if (data.size < 1 + IV_LEN + TAG_LEN / 8 || data[0] != FORMAT) throw IOException("Ficheiro do cofre inválido.")
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_LEN, data, 1, IV_LEN))
+        cipher.updateAAD(f.name.toByteArray())
+        return cipher.doFinal(data, 1 + IV_LEN, data.size - 1 - IV_LEN)
+    }
+
+    /** Formato antigo (até à 1.4.2): o ficheiro tem o nome da entrada, que também é o AAD. */
+    private fun openLegacy(f: File, name: String): ByteArray {
+        val data = f.readBytes()
+        if (data.size < 1 + IV_LEN + TAG_LEN / 8 || data[0] != LEGACY_FORMAT) throw IOException("Ficheiro do cofre inválido.")
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_LEN, data, 1, IV_LEN))
+        cipher.updateAAD(name.toByteArray())
+        return cipher.doFinal(data, 1 + IV_LEN, data.size - 1 - IV_LEN)
+    }
+
+    /** Põe um ficheiro de lado sem o destruir, com um nome que não diz nada. */
+    private fun moveAside(f: File) {
+        val bad = File(base, "vault-avariados").apply { mkdirs() }
+        val name = "${System.currentTimeMillis()}-" + ByteArray(6).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) }
+        if (f.exists() && !f.renameTo(File(bad, name))) f.delete()
     }
 
     private fun key(): SecretKey = key ?: loadOrCreateKey().also { key = it }
@@ -141,7 +352,7 @@ class KeystoreStore internal constructor(context: Context, testKey: SecretKey?) 
         (ks.getKey(alias, null) as? SecretKey)?.let { return it }
         // Sem chave mas com ficheiros: não criar outra às escondidas (os ficheiros ficariam ilegíveis
         // para sempre e qualquer recuperação deixaria de ser possível).
-        if (names().isNotEmpty()) throw VaultKeyLostException()
+        if (hasFiles()) throw VaultKeyLostException()
         // Tenta primeiro o StrongBox (chip de segurança dedicado); se não existir ou falhar, usa o TEE.
         if (Build.VERSION.SDK_INT >= 28) {
             try {
@@ -181,7 +392,14 @@ class KeystoreStore internal constructor(context: Context, testKey: SecretKey?) 
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val IV_LEN = 12
         const val TAG_LEN = 128
-        const val FORMAT: Byte = 1
+        /** Formato atual: nome aleatório, com o nome da entrada lá dentro. */
+        const val FORMAT: Byte = 2
+        /** Até à 1.4.2: o nome do ficheiro era o nome da entrada. */
+        const val LEGACY_FORMAT: Byte = 1
+        const val INDEX = "v2-index"
+        /** Nome de uma entrada (p. ex. "pub-<fingerprint>"); é também o nome dos ficheiros antigos. */
         val NAME = Regex("^[a-z]+(-[0-9A-F]{40,64})?$")
+        val LEGACY = NAME
+        val ENTRY = Regex("^v2-[0-9a-f]{32}$")
     }
 }

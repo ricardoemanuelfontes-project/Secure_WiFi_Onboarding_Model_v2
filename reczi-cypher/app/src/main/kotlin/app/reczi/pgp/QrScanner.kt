@@ -64,7 +64,7 @@ class QrScanner(
             .setNeutralButton("De uma fotografia…") { _, _ -> onPhoto() }
             .setOnDismissListener { close() }
             .create().also {
-                it.window?.setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                protectWindow(it.window)
                 it.show()
             }
         preview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
