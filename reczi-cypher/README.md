@@ -87,7 +87,9 @@ Em ☰ > Definições:
 
 - **Impressão digital / bloqueio do telemóvel**: pedido ao abrir e depois de 1 minuto fora da app.
 - **PIN da app**: um PIN próprio (guardado só como scrypt com sal). A partir da 5.ª tentativa
-  errada, há uma espera que vai duplicando.
+  errada, há uma espera que vai duplicando (30 s, 1 min… até 1 h). A espera conta pelo tempo
+  desde que o telemóvel ligou, não pela hora: mudar a hora nas definições não a salta (até à 1.4.4
+  saltava), e reiniciar o telemóvel faz a espera começar de novo.
 - **PIN de pânico**: escrito no ecrã de bloqueio, apaga tudo (ficheiros do cofre e a chave do
   Keystore) e abre a app vazia. Não há volta.
 
@@ -318,6 +320,42 @@ ainda não teve uma auditoria independente.
   encriptar para ti e ler, assinar e verificar, o menu e os submenus das chaves, o cofre (nomes
   dos ficheiros, passagem dos cofres antigos, ficheiros estragados) e a acessibilidade. Só os testes usam
   AndroidX; o APK não leva nenhuma dependência AndroidX.
+
+## Testes de ataque
+
+Para validar um mínimo de segurança, há duas baterias que fazem o papel de quem tenta tirar alguma
+coisa da app. Não substituem uma auditoria independente, mas apanham os erros mais comuns.
+
+**`AttackTest`** (`./gradlew :app:testDebugUnitTest`), 13 cenários:
+
+| Quem ataca | O que tenta | O que se verifica |
+|---|---|---|
+| Root ou análise forense | Copiar os ficheiros da app depois de um uso normal | Nenhum nome, email, fingerprint, id de chave, palavra-passe, frase do código, nota, mensagem ou chave PGP aparece, nem em UTF-8 nem UTF-16; os nomes dos ficheiros não dizem nada |
+| Cópia de segurança | adb backup, cloud do Google, passar para outro telemóvel | Tudo excluído |
+| Outra app | Procurar portas abertas | Só a atividade principal, que só aceita texto; sem serviços, fornecedores ou recetores abertos; sem Internet; tarefa própria (contra StrandHogg) |
+| Outra app | Partilhar um "ficheiro" que aponta para o cofre | Ignorado: a app só lê texto partilhado |
+| Outra app | Partilhar texto com a app bloqueada | Só aparece o ecrã do PIN; menu e "voltar" não passam |
+| Outra app | Capturas e gravação de ecrã | Todas as janelas e diálogos com FLAG_SECURE e escondidos da acessibilidade |
+| Outra app | Toques através de uma janela por cima (tapjacking) | Recusados |
+| Quem pega no telemóvel | Adivinhar o PIN | Espera a partir do 5.º erro, que não se salta fechando a app |
+| Quem pega no telemóvel | Mudar a hora ou reiniciar para saltar a espera | Não salta |
+| Quem pega no telemóvel | Ler a área de transferência | Marcada como sensível e limpa ao fim de 45 s, mesmo com a app fechada |
+| Quem pega no telemóvel | Ecrã esquecido aberto | Bloqueia ao fim de 1 min fora; ao fim de 5 min o texto em claro desaparece |
+| O teclado | Aprender o que se escreve | Todos os campos pedem "não aprender" e ficam fora do preenchimento automático |
+| Quem lê o código | Registos (logcat) ou ligações à rede | Nenhum |
+
+Para confirmar que os testes servem para alguma coisa, estragou-se a app de propósito (sem
+FLAG_SECURE, sem proteção contra toques por cima, a espera do PIN pela hora, sem limpar o ecrã ao
+fim de 5 minutos), e de cada vez falhou o teste certo.
+
+**`tools/auditar-apk.sh`** olha para o APK final como quem o descarrega: não é depurável, cópias de
+segurança desligadas, só as permissões esperadas e sem Internet, só a atividade principal aberta,
+assinatura v2/v3 sem v1 e com o certificado do Reczi cypher, sem bibliotecas nativas, sem chaves
+ou palavras-passe embutidas, sem bibliotecas de testes, rede, anúncios ou estatísticas, sem logcat.
+
+```bash
+ANDROID_HOME=/caminho/do/sdk tools/auditar-apk.sh app/build/outputs/apk/release/app-release.apk
+```
 
 ## Compilar
 
