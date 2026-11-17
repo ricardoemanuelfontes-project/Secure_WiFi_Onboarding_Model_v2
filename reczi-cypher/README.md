@@ -131,6 +131,11 @@ disfarce); só muda a forma de a escrever, e quem recebe não escolhe nada: a ap
   arranca pela esquerda e remata de longe!").
 - **Disfarçado: letra de rap**: barras rimadas aos pares, com deuses antigos, futebol e géneros
   musicais ("Do amapiano à kizomba, celebro o manjar").
+- **Disfarçado: letra de rap 2** (1.4.4): como a letra de rap, com heróis, musas e criaturas ao
+  lado dos deuses ("Sou Anansi no dancehall, sigo a segurança"). O mesmo nome nunca aparece duas
+  vezes na mesma barra, há 14 barras diferentes em vez de 10, e 12 aberturas e 12 fechos que às
+  vezes nem aparecem: o princípio e o fim deixam de ser uma marca fácil de procurar. A letra de
+  rap antiga continua no menu e a abrir; quem recebe a 2 precisa da versão 1.4.4.
 
 Os textos corridos são moldes de frase com espaços, e cada espaço tem a sua lista de opções, à
 medida daquele sítio da frase; cada opção guarda alguns bits (ver `Prose.kt` e `Books.kt`).
@@ -148,6 +153,7 @@ Tamanho, para uma mensagem curta (medido nos testes; depois de encriptar a app m
 | Diário de viagem | 218 frases | 107 frases | 859 frases | 315 frases |
 | Relato de futebol | 149 frases | 70 frases | 575 frases | 218 frases |
 | Letra de rap | 130 barras | 64 barras | 526 barras | 190 barras |
+| Letra de rap 2 | 148 barras | 76 barras | 590 barras | 216 barras |
 
 Com chaves RSA, as mensagens PGP são cerca de 4 vezes maiores. Para os textos corridos, o modo
 compacto ajuda muito.

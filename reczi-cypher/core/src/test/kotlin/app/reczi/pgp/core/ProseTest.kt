@@ -45,6 +45,7 @@ class ProseTest {
                 "viagem" to "36c7484e9d1a1eb4619b55fffbcad2feadc25c7506e436c94254965c73c4c2fe",
                 "futebol" to "affa286c452389e3d8fc731ec220aea1b9f3266a753dd1c7a50f578c476cd325",
                 "letra" to "29f707c9fd1c437e6e9db0d024099954035f9f386d4117271b4e266e0557fffd",
+                "letra 2" to "f55df7e0fb4dea52168e02a2d51a98bc352c25dc71a25477d02c390c19e9bcee",
             ),
             Books.all.map { it.name to it.digest },
         )
@@ -65,7 +66,7 @@ class ProseTest {
         val msg = ana.encrypt("às 8 no sítio do costume", listOf(ruiFpr), anaFpr, true, pass)
         ana.setCode(ruiFpr, "o gato comeu a sardinha".toCharArray())
         rui.setCode(anaFpr, "o gato comeu a sardinha".toCharArray())
-        for (style in listOf(Disguise.Style.Chronicle, Disguise.Style.Trip, Disguise.Style.Football, Disguise.Style.Lyrics)) {
+        for (style in listOf(Disguise.Style.Chronicle, Disguise.Style.Trip, Disguise.Style.Football, Disguise.Style.Lyrics, Disguise.Style.Lyrics2)) {
             val plain = ana.disguise(msg, style)
             assertFalse(plain.contains("PGP", ignoreCase = true))
             assertTrue(plain.none { it.isDigit() }, "sem números: $style")

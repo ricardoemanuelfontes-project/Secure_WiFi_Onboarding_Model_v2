@@ -330,71 +330,149 @@ internal object Books {
 
     private fun bar(b: String, n: Int) = b.replace("{R}", "{R$n:RIMA}").replace("{em:R}", "{R$n:em:RIMA}")
 
+    private val RAP_DEUS = l("""
+        Hermes | Apolo | Atena | Ares | Poseidon | Hades | Afrodite | Ártemis | Dioniso | Hefesto | Hera | Deméter
+        Perséfone | Prometeu | Hércules | Aquiles | Ulisses | Orfeu | Medusa | Ícaro | Pégaso | Cronos | Atlas | Pandora
+        Eros | Morfeu | Hélio | Selene | Éolo | Quíron | Odin | Thor | Loki | Freya | Tyr | Balder
+        Heimdall | Frigg | Fenrir | Zeus | Rá | Osíris | Ísis | Hórus | Anúbis | Seth | Thot | Bastet
+        Amon | Hathor | Júpiter | Marte | Vénus | Mercúrio | Neptuno | Minerva | Baco | Cupido | Jano | Saturno
+        Adamastor | Endovélico | Marduk | Ishtar
+    """)
+
+    private val RAP_FUT = l("""
+        o golo | a baliza | o penálti | o livre | o canto | o remate | o cabeceamento | o relvado
+        o balneário | o apito | o cartão | a finta | o drible | o passe | a assistência | a bancada
+        a claque | o estádio | o dérbi | a taça | o mister | o capitão | a braçadeira | o golaço
+        a trivela | a rabona | o calcanhar | o miolo | o prolongamento | a barreira | o poste | a trave
+    """)
+
+    private val RAP_GEN = l("""
+        o rap | o trap | o drill | o boom _bap | o grime | o fado | o kuduro | a kizomba
+        o semba | o funaná | a morna | o afrobeat | o reggae | o dancehall | o soul | o funk
+        o jazz | o blues | o samba | o rock | o punk | o techno | o house | o zouk
+        o gospel | a salsa | o tango | o flamenco | o amapiano | o freestyle | o beatbox | o vinil
+    """)
+
+    private val RAP_IMG = l("""
+        a coroa | o trono | o escudo | a fénix | o lobo | o corvo | a águia | o tigre
+        a pantera | o falcão | o oráculo | o labirinto | o Olimpo | o Valhala | o Nilo | a pirâmide
+        a esfinge | o relâmpago | a tormenta | o eclipse | o cometa | a lua | o sol | o mármore
+        o ouro | o bronze | a bigorna | a forja | a âncora | o farol | o deserto | a selva
+        o asfalto | o betão | o bairro | a esquina | o microfone | o caderno | a caneta | o palco
+        o holofote | a sombra | a luz | o fogo | a cinza | a brasa | o diamante | a pérola
+        o espelho | a máscara | a chave | o mapa | a bússola | o horizonte | a montanha | a ponte
+        o comboio | a muralha | a ampulheta | o pergaminho | o enigma | o néctar | o tridente | a lira
+    """)
+
+    private val RAP_VERBO = l("""
+        rimo | risco | rasgo | carrego | acendo | levanto | ergo | solto
+        escrevo | desenho | construo | conquisto | atravesso | desafio | invoco | chamo
+        guardo | sigo | celebro | piso | quebro | mudo | toco | desperto
+        abraço | sonho | domino | acordo | grito | trago | levo | liberto
+    """)
+
+    /** As 16 famílias de rimas das letras de rap. */
+    private val RAP_RHYMES = listOf(
+        "o trovão | o refrão | a canção | o dragão | o leão | o coração | a missão | a visão | o vulcão | o furacão | a nação | o chão | a ilusão | a razão | o campeão | a paixão",
+        "as multidões | as emoções | as lições | as orações | as estações | as gerações | as tradições | as revoluções | as constelações | os pulmões | os portões | os sermões | as canções | os trovões | os corações | os dragões",
+        "a verdade | a cidade | a saudade | a vontade | a liberdade | a eternidade | a idade | a metade | a tempestade | a lealdade | a humildade | a realidade | a amizade | a felicidade | a claridade | a majestade",
+        "a vida | a batida | a partida | a saída | a subida | a corrida | a avenida | a medida | a despedida | a guarida | a investida | a descida | a ermida | a margarida | a ferida | a lida",
+        "a gente | a mente | a frente | a semente | a serpente | a corrente | o presente | o continente | o poente | o nascente | o ambiente | o oriente | o ocidente | o expoente | o crente | o valente",
+        "a poesia | a magia | a melodia | a harmonia | a energia | a sabedoria | o dia | a alegria | a sinfonia | a mitologia | a filosofia | a fantasia | a ousadia | a maresia | a utopia | a epifania",
+        "o amor | a dor | a flor | a cor | o valor | o rumor | o tambor | o suor | o motor | o clamor | o fervor | o esplendor | o calor | o sabor | o ardor | o vapor",
+        "a estrada | a jornada | a madrugada | a alvorada | a balada | a escalada | a morada | a fada | a chegada | a entrada | a largada | a pegada | a armada | a cavalgada | a toada | a noitada",
+        "o mar | o luar | o lugar | o altar | o olhar | o lar | o pilar | o azar | o paladar | o pomar | o solar | o tear | o limiar | o manjar | o lagar | o despertar",
+        "a altura | a loucura | a cultura | a aventura | a armadura | a escultura | a postura | a ternura | a censura | a fartura | a leitura | a partitura | a abertura | a moldura | a criatura | a mistura",
+        "o momento | o vento | o talento | o tormento | o firmamento | o pensamento | o sentimento | o movimento | o fundamento | o testamento | o lamento | o alimento | o instrumento | o argumento | o juramento | o elemento",
+        "o final | o sinal | o ritual | o cristal | o portal | o metal | o temporal | o canal | o vendaval | o vitral | o ideal | o sal | o carnaval | o astral | o festival | o coral",
+        "o abismo | o sismo | o misticismo | o heroísmo | o otimismo | o realismo | o lirismo | o magnetismo | o simbolismo | o paganismo | o batismo | o egoísmo | o cinismo | o altruísmo | o idealismo | o romantismo",
+        "o castelo | o martelo | o duelo | o apelo | o elo | o novelo | o selo | o cabelo | o modelo | o flagelo | o paralelo | o belo | o atropelo | o gelo | o zelo | o pesadelo",
+        "a esperança | a dança | a lembrança | a herança | a balança | a aliança | a criança | a confiança | a mudança | a trança | a bonança | a festança | a andança | a temperança | a liderança | a segurança",
+        "a estrela | a janela | a vela | a novela | a tela | a donzela | a sentinela | a aquarela | a capela | a cidadela | a caravela | a gazela | a viela | a procela | a Cinderela | a parcela",
+    ).map(::l)
+
     val lyrics = Prose(
         "letra",
         mapOf(
-            "DEUS" to l("""
-                Hermes | Apolo | Atena | Ares | Poseidon | Hades | Afrodite | Ártemis | Dioniso | Hefesto | Hera | Deméter
-                Perséfone | Prometeu | Hércules | Aquiles | Ulisses | Orfeu | Medusa | Ícaro | Pégaso | Cronos | Atlas | Pandora
-                Eros | Morfeu | Hélio | Selene | Éolo | Quíron | Odin | Thor | Loki | Freya | Tyr | Balder
-                Heimdall | Frigg | Fenrir | Zeus | Rá | Osíris | Ísis | Hórus | Anúbis | Seth | Thot | Bastet
-                Amon | Hathor | Júpiter | Marte | Vénus | Mercúrio | Neptuno | Minerva | Baco | Cupido | Jano | Saturno
-                Adamastor | Endovélico | Marduk | Ishtar
-            """),
-            "FUT" to l("""
-                o golo | a baliza | o penálti | o livre | o canto | o remate | o cabeceamento | o relvado
-                o balneário | o apito | o cartão | a finta | o drible | o passe | a assistência | a bancada
-                a claque | o estádio | o dérbi | a taça | o mister | o capitão | a braçadeira | o golaço
-                a trivela | a rabona | o calcanhar | o miolo | o prolongamento | a barreira | o poste | a trave
-            """),
-            "GEN" to l("""
-                o rap | o trap | o drill | o boom _bap | o grime | o fado | o kuduro | a kizomba
-                o semba | o funaná | a morna | o afrobeat | o reggae | o dancehall | o soul | o funk
-                o jazz | o blues | o samba | o rock | o punk | o techno | o house | o zouk
-                o gospel | a salsa | o tango | o flamenco | o amapiano | o freestyle | o beatbox | o vinil
-            """),
-            "IMG" to l("""
-                a coroa | o trono | o escudo | a fénix | o lobo | o corvo | a águia | o tigre
-                a pantera | o falcão | o oráculo | o labirinto | o Olimpo | o Valhala | o Nilo | a pirâmide
-                a esfinge | o relâmpago | a tormenta | o eclipse | o cometa | a lua | o sol | o mármore
-                o ouro | o bronze | a bigorna | a forja | a âncora | o farol | o deserto | a selva
-                o asfalto | o betão | o bairro | a esquina | o microfone | o caderno | a caneta | o palco
-                o holofote | a sombra | a luz | o fogo | a cinza | a brasa | o diamante | a pérola
-                o espelho | a máscara | a chave | o mapa | a bússola | o horizonte | a montanha | a ponte
-                o comboio | a muralha | a ampulheta | o pergaminho | o enigma | o néctar | o tridente | a lira
-            """),
-            "VERBO" to l("""
-                rimo | risco | rasgo | carrego | acendo | levanto | ergo | solto
-                escrevo | desenho | construo | conquisto | atravesso | desafio | invoco | chamo
-                guardo | sigo | celebro | piso | quebro | mudo | toco | desperto
-                abraço | sonho | domino | acordo | grito | trago | levo | liberto
-            """),
+            "DEUS" to RAP_DEUS,
+            "FUT" to RAP_FUT,
+            "GEN" to RAP_GEN,
+            "IMG" to RAP_IMG,
+            "VERBO" to RAP_VERBO,
         ),
         BARS.flatMapIndexed { i, a -> BARS.filterIndexed { j, _ -> j != i }.map { b -> bar(a, 1) + "\n" + bar(b, 2) } },
-        rhymes = listOf(
-            "o trovão | o refrão | a canção | o dragão | o leão | o coração | a missão | a visão | o vulcão | o furacão | a nação | o chão | a ilusão | a razão | o campeão | a paixão",
-            "as multidões | as emoções | as lições | as orações | as estações | as gerações | as tradições | as revoluções | as constelações | os pulmões | os portões | os sermões | as canções | os trovões | os corações | os dragões",
-            "a verdade | a cidade | a saudade | a vontade | a liberdade | a eternidade | a idade | a metade | a tempestade | a lealdade | a humildade | a realidade | a amizade | a felicidade | a claridade | a majestade",
-            "a vida | a batida | a partida | a saída | a subida | a corrida | a avenida | a medida | a despedida | a guarida | a investida | a descida | a ermida | a margarida | a ferida | a lida",
-            "a gente | a mente | a frente | a semente | a serpente | a corrente | o presente | o continente | o poente | o nascente | o ambiente | o oriente | o ocidente | o expoente | o crente | o valente",
-            "a poesia | a magia | a melodia | a harmonia | a energia | a sabedoria | o dia | a alegria | a sinfonia | a mitologia | a filosofia | a fantasia | a ousadia | a maresia | a utopia | a epifania",
-            "o amor | a dor | a flor | a cor | o valor | o rumor | o tambor | o suor | o motor | o clamor | o fervor | o esplendor | o calor | o sabor | o ardor | o vapor",
-            "a estrada | a jornada | a madrugada | a alvorada | a balada | a escalada | a morada | a fada | a chegada | a entrada | a largada | a pegada | a armada | a cavalgada | a toada | a noitada",
-            "o mar | o luar | o lugar | o altar | o olhar | o lar | o pilar | o azar | o paladar | o pomar | o solar | o tear | o limiar | o manjar | o lagar | o despertar",
-            "a altura | a loucura | a cultura | a aventura | a armadura | a escultura | a postura | a ternura | a censura | a fartura | a leitura | a partitura | a abertura | a moldura | a criatura | a mistura",
-            "o momento | o vento | o talento | o tormento | o firmamento | o pensamento | o sentimento | o movimento | o fundamento | o testamento | o lamento | o alimento | o instrumento | o argumento | o juramento | o elemento",
-            "o final | o sinal | o ritual | o cristal | o portal | o metal | o temporal | o canal | o vendaval | o vitral | o ideal | o sal | o carnaval | o astral | o festival | o coral",
-            "o abismo | o sismo | o misticismo | o heroísmo | o otimismo | o realismo | o lirismo | o magnetismo | o simbolismo | o paganismo | o batismo | o egoísmo | o cinismo | o altruísmo | o idealismo | o romantismo",
-            "o castelo | o martelo | o duelo | o apelo | o elo | o novelo | o selo | o cabelo | o modelo | o flagelo | o paralelo | o belo | o atropelo | o gelo | o zelo | o pesadelo",
-            "a esperança | a dança | a lembrança | a herança | a balança | a aliança | a criança | a confiança | a mudança | a trança | a bonança | a festança | a andança | a temperança | a liderança | a segurança",
-            "a estrela | a janela | a vela | a novela | a tela | a donzela | a sentinela | a aquarela | a capela | a cidadela | a caravela | a gazela | a viela | a procela | a Cinderela | a parcela",
-        ).map(::l),
+        rhymes = RAP_RHYMES,
         openings = listOf("Yeah… mais uma, beat a rolar.", "Isto é para quem percebe."),
         closings = listOf("Paz.", "É isto. Até à próxima."),
         perParagraph = 4,
         lines = true,
     )
 
+    /**
+     * Letra 2 (versão 1.4.4): a mesma ideia da letra de rap, com o que se aprendeu com ela.
+     * - Na mesma barra, cada lista aparece no máximo uma vez: nunca "Hera no amapiano, Hera no miolo".
+     *   Para isso há uma segunda lista de nomes ([RAP_HEROI]: heróis, musas e criaturas).
+     * - 14 barras diferentes em vez de 10, e 12 aberturas e 12 fechos, que às vezes nem aparecem:
+     *   o princípio e o fim deixam de ser uma marca fácil de procurar.
+     */
+    private val RAP_HEROI = l("""
+        Perseu | Teseu | Jasão | Eneias | Heitor | Penélope | Cassandra | Andrómeda | Ariadne | Electra | Antígona | Édipo
+        Narciso | Gaia | Urano | Têmis | Hécate | Calipso | Circe | Hidra | Minotauro | Ciclope | Quimera | Cérbero
+        Sísifo | Tântalo | Midas | Dédalo | Belerofonte | Hipólita | Atalanta | Gilgamesh | Enkidu | Sansão | Golias | Merlim
+        Lancelote | Sigurd | Beowulf | Valquíria | Viriato | Tritão | Proteu | Hipnos | Tânatos | Némesis | Ganimedes | Hiperíon
+        Mnemósine | Calíope | Euterpe | Clio | Polímnia | Terpsícore | Melpómene | Sleipnir | Yggdrasil | Bragi | Idun | Njord
+        Sekhmet | Sobek | Anansi | Iemanjá
+    """)
+
+    private val BARS2 = listOf(
+        "{DEUS} {em:GEN}, {HEROI} {em:FUT}, {VERBO} {R}",
+        "{de:GEN} {a:FUT}, {VERBO} {R}",
+        "{VERBO} {IMG} {em:FUT} e fico {em:R}",
+        "como {HEROI} {em:IMG}, {VERBO} {R}",
+        "{FUT} de {DEUS}, {IMG} de {HEROI}, {VERBO} {R}",
+        "{VERBO} {IMG} e vou {por:R}",
+        "{GEN} {em:IMG}, {DEUS} {em:FUT}, {VERBO} {R}",
+        "{IMG} {de:GEN}, {HEROI} ao meu lado, {VERBO} {R}",
+        "sou {HEROI} {em:GEN}, {VERBO} {R}",
+        "com {IMG} na mão e {DEUS} {em:FUT}, {VERBO} {R}",
+        "{DEUS} sabe, {HEROI} viu, {VERBO} {R}",
+        "nem {DEUS} nem {HEROI} travam {R}",
+        "{em:FUT} ou {em:GEN}, {VERBO} {R}",
+        "eu {VERBO} {IMG} {em:FUT}, é {R}",
+    )
+
+    /** "{R}" ou "{prep:R}" -> a rima da primeira ou da segunda barra do par. */
+    private fun bar2(b: String, n: Int) = Regex("\\{(?:(\\w+):)?R\\}").replace(b) { m ->
+        val prep = m.groupValues[1]
+        if (prep.isEmpty()) "{R$n:RIMA}" else "{R$n:$prep:RIMA}"
+    }
+
+    val lyrics2 = Prose(
+        "letra 2",
+        mapOf(
+            "DEUS" to RAP_DEUS,
+            "HEROI" to RAP_HEROI,
+            "FUT" to RAP_FUT,
+            "GEN" to RAP_GEN,
+            "IMG" to RAP_IMG,
+            "VERBO" to RAP_VERBO,
+        ),
+        BARS2.flatMapIndexed { i, a -> BARS2.filterIndexed { j, _ -> j != i }.map { b -> bar2(a, 1) + "\n" + bar2(b, 2) } },
+        rhymes = RAP_RHYMES,
+        openings = listOf(
+            "Ya, ouve só.", "Mais uma para a playlist.", "Bora lá, sem pressas.", "Isto saiu à noite, sem filtro.",
+            "Primeira tentativa, sem cortes.", "Para os que ficaram.", "Uh, deixa tocar.", "Rascunho, ainda sem nome.",
+            "Gravado em casa, à moda antiga.", "Isto é para ti, já sabes quem.", "Escuta com calma.", "Dedicado aos de sempre.",
+        ),
+        closings = listOf(
+            "Fica bem.", "Até breve.", "Diz-me o que achas.", "Volto já.", "Fim do rascunho.", "Obrigado por ouvires.",
+            "Saudações.", "Respeito.", "Ainda falta acabar.", "Fica para a próxima.", "Um salve a quem percebe.", "Já chega por hoje.",
+        ),
+        perParagraph = 4,
+        lines = true,
+        optionalEnds = true,
+    )
+
     /** Todos, pela ordem em que se tenta ler. */
-    val all: List<Prose> get() = listOf(chronicle, trip, football, lyrics)
+    val all: List<Prose> get() = listOf(chronicle, trip, football, lyrics, lyrics2)
 }

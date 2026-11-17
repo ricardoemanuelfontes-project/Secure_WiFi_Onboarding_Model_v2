@@ -57,7 +57,7 @@ internal class EncryptScreen(a: MainActivity) : Screen(a, "Encriptar") {
             "• Assinar: prova que foste tu a escrever; pede a tua palavra-passe.\n" +
             "• Formato: \"PGP normal\" abre em qualquer programa mas vê-se que é PGP; os \"Disfarçados\" não parecem PGP e só abrem no Reczi cypher. " +
             "Por baixo são todos iguais (a mesma encriptação); só muda a aparência: código (curto, parece um token), poema, crónica (as novidades da semana), " +
-            "diário de viagem, relato de futebol ou letra de rap. Os textos corridos lêem-se como texto normal, mas são compridos: " +
+            "diário de viagem, relato de futebol ou letra de rap (a 2 é mais variada). Os textos corridos lêem-se como texto normal, mas são compridos: " +
             "depois de encriptar vês quantas frases ficou. Quem recebe não escolhe nada: a app reconhece o formato.\n" +
             "• Modo compacto: a mensagem fica com cerca de metade do tamanho, o que encurta muito o poema. Em troca não leva a tua assinatura " +
             "(o destinatário não confirma que é tua) e não fica encriptada para ti (não a consegues reler depois).\n" +

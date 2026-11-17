@@ -47,6 +47,8 @@ internal class Prose(
     private val perParagraph: Int = 4,
     /** true: cada molde vai em linhas próprias (letra); false: frases seguidas em parágrafos. */
     private val lines: Boolean = false,
+    /** true: às vezes não há abertura ou fecho (não levam dados; assim também não são uma marca). */
+    private val optionalEnds: Boolean = false,
 ) {
     private class Item(val text: String, val key: String, val gender: Char?)
     private class Slot(val list: String, val prep: String?, val gendered: Boolean, val rhyme: Int)
@@ -195,7 +197,7 @@ internal class Prose(
             pieces += render(templates[t], bits, random)
         }
         val out = StringBuilder()
-        if (openings.isNotEmpty()) out.append(openings[random.nextInt(openings.size)]).append("\n\n")
+        if (openings.isNotEmpty()) pick(openings, random)?.let { out.append(it).append("\n\n") }
         var inPar = 0
         var target = paragraphSize(random)
         for ((i, p) in pieces.withIndex()) {
@@ -210,8 +212,14 @@ internal class Prose(
                 out.append(if (lines) "\n" else " ")
             }
         }
-        if (closings.isNotEmpty()) out.append("\n\n").append(closings[random.nextInt(closings.size)])
+        if (closings.isNotEmpty()) pick(closings, random)?.let { out.append("\n\n").append(it) }
         return out.toString()
+    }
+
+    /** Uma abertura ou um fecho; com [optionalEnds], às vezes nenhum (uma vez em cada [ends] + 1). */
+    private fun pick(ends: List<String>, random: Random): String? {
+        val i = random.nextInt(ends.size + if (optionalEnds) 1 else 0)
+        return ends.getOrNull(i)
     }
 
     private fun paragraphSize(random: Random) = if (lines) perParagraph else (perParagraph - 1 + random.nextInt(3)).coerceAtLeast(1)

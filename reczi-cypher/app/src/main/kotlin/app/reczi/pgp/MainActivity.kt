@@ -1414,6 +1414,7 @@ class MainActivity : Activity(), Ui {
         const val FORMAT_TRIP = 5
         const val FORMAT_FOOTBALL = 6
         const val FORMAT_LYRICS = 7
+        const val FORMAT_LYRICS2 = 8
         const val PREF_COMPACT = "compact"
         /** Os formatos oferecidos, pela ordem do menu. */
         val FORMATS = listOf(
@@ -1436,6 +1437,10 @@ class MainActivity : Activity(), Ui {
             Format(FORMAT_LYRICS, "Disfarçado: letra de rap", Disguise.Style.Lyrics, "barras",
                 "Parece uma letra de rap, com barras rimadas aos pares: deuses antigos, futebol, géneros musicais. É o mais curto dos textos: " +
                     "uma mensagem curta dá à volta de 130 barras (65 com o modo compacto). Só quem usa o Reczi cypher o consegue abrir."),
+            Format(FORMAT_LYRICS2, "Disfarçado: letra de rap 2", Disguise.Style.Lyrics2, "barras",
+                "Como a letra de rap, mas mais variada: heróis, musas e criaturas ao lado dos deuses, nunca o mesmo nome duas vezes na " +
+                    "mesma barra, e mais formas de começar e acabar (às vezes nenhuma). Uma mensagem curta dá à volta de 150 barras " +
+                    "(75 com o modo compacto). Quem recebe precisa do Reczi cypher 1.4.4 ou mais recente.")
         )
 
         /** O formato com este id; o antigo "palavras" passa a crónica, e um id desconhecido a PGP normal. */

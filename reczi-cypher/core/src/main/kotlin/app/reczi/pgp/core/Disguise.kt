@@ -25,7 +25,7 @@ import javax.crypto.spec.SecretKeySpec
  * Há várias formas de escrever o resultado, todas com os mesmos bytes por baixo (a escolha só
  * muda a aparência): "código" (Base64 URL-safe, curto), "palavras" (uma palavra por byte; já não
  * se oferece, mas continua a abrir), "poema" (ver [Poem]) e os textos corridos de [Books]
- * (crónica, diário de viagem, relato de futebol, letra de rap).
+ * (crónica, diário de viagem, relato de futebol, letra de rap e letra 2).
  *
  * CÓDIGO SECRETO (opcional, por contacto): em vez da chave fixa, a camada de fora usa uma chave
  * derivada de uma frase combinada entre duas pessoas ([deriveSecret]). Nesse caso é mesmo uma
@@ -86,13 +86,14 @@ object Disguise {
      * Como o texto disfarçado é escrito. Words já não se oferece (parece uma lista ao acaso) mas
      * continua a abrir. Não mudar a ordem: a app guarda a escolha pelo nome.
      */
-    enum class Style { Code, Words, Poem, Chronicle, Trip, Football, Lyrics }
+    enum class Style { Code, Words, Poem, Chronicle, Trip, Football, Lyrics, Lyrics2 }
 
     private fun book(style: Style): Prose? = when (style) {
         Style.Chronicle -> Books.chronicle
         Style.Trip -> Books.trip
         Style.Football -> Books.football
         Style.Lyrics -> Books.lyrics
+        Style.Lyrics2 -> Books.lyrics2
         else -> null
     }
 
