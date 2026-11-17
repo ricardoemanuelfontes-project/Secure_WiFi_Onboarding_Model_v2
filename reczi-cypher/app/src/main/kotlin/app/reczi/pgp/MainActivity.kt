@@ -25,6 +25,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.text.Editable
@@ -276,8 +277,27 @@ class MainActivity : Activity(), Ui {
         if (bio) systemUnlock()
     }
 
+    /**
+     * Quanto falta esperar depois de demasiados PINs errados. Conta pelo tempo desde que o telemóvel
+     * ligou (SystemClock.elapsedRealtime), não pela hora: mudar a hora nas definições não salta a
+     * espera. Se o telemóvel reiniciou entretanto (esse tempo volta a zero), a espera começa de novo.
+     */
+    private fun pinWaitLeft(): Long {
+        val wait = prefs.getLong(PREF_PIN_WAIT, 0)
+        if (wait <= 0) return 0
+        val now = SystemClock.elapsedRealtime()
+        val boot = bootCount()
+        if (prefs.getInt(PREF_PIN_BOOT, -1) != boot) {
+            prefs.edit().putLong(PREF_PIN_DEADLINE, now + wait).putInt(PREF_PIN_BOOT, boot).apply()
+            return wait
+        }
+        return (prefs.getLong(PREF_PIN_DEADLINE, 0) - now).coerceIn(0, wait)
+    }
+
+    private fun bootCount(): Int = Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT, 0)
+
     private fun tryPin(pin: EditText, msg: TextView) {
-        val wait = (prefs.getLong(PREF_PIN_UNTIL, 0) - System.currentTimeMillis()).coerceAtMost(MAX_PIN_WAIT_MS)
+        val wait = pinWaitLeft()
         if (wait > 0) {
             pin.setText("")
             msg.text = "Demasiadas tentativas. Espera ${wait / 1000 + 1} s."
@@ -288,7 +308,7 @@ class MainActivity : Activity(), Ui {
         work("A abrir…", { try { vault.checkPin(chars) } finally { chars.fill('\u0000') } }) { r ->
             when (r) {
                 PinResult.Ok -> {
-                    prefs.edit().remove(PREF_PIN_FAILS).remove(PREF_PIN_UNTIL).apply()
+                    prefs.edit().remove(PREF_PIN_FAILS).remove(PREF_PIN_UNTIL).remove(PREF_PIN_WAIT).remove(PREF_PIN_DEADLINE).remove(PREF_PIN_BOOT).apply()
                     unlocked()
                 }
                 PinResult.Panic -> panic()
@@ -297,7 +317,9 @@ class MainActivity : Activity(), Ui {
                     val fails = prefs.getInt(PREF_PIN_FAILS, 0) + 1
                     val edit = prefs.edit().putInt(PREF_PIN_FAILS, fails)
                     if (fails >= 5) {
-                        edit.putLong(PREF_PIN_UNTIL, System.currentTimeMillis() + (30_000L shl (fails - 5).coerceAtMost(7)).coerceAtMost(MAX_PIN_WAIT_MS))
+                        val wait = (30_000L shl (fails - 5).coerceAtMost(7)).coerceAtMost(MAX_PIN_WAIT_MS)
+                        edit.putLong(PREF_PIN_WAIT, wait).putLong(PREF_PIN_DEADLINE, SystemClock.elapsedRealtime() + wait)
+                            .putInt(PREF_PIN_BOOT, bootCount()).remove(PREF_PIN_UNTIL)
                     }
                     edit.apply()
                     msg.text = "PIN errado."
@@ -1396,7 +1418,11 @@ class MainActivity : Activity(), Ui {
         const val KIND_QR_PRIVATE = "qrPrivate"
         const val PREF_LOCK_BIO = "lockBio"
         const val PREF_PIN_FAILS = "pinFails"
+        /** Até à 1.4.4: a hora até quando esperar (saltava-se mudando a hora). Só para apagar. */
         const val PREF_PIN_UNTIL = "pinUntil"
+        const val PREF_PIN_WAIT = "pinWait"
+        const val PREF_PIN_DEADLINE = "pinDeadline"
+        const val PREF_PIN_BOOT = "pinBoot"
         const val LOCK_AFTER_MS = 60_000L
         const val MAX_PIN_WAIT_MS = 3600_000L
         const val MAX_FILE = 1 shl 20
