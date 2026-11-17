@@ -98,6 +98,10 @@ Keystore não fica presa à impressão digital, de propósito: o Android destró
 se tira o bloqueio de ecrã, e o cofre perdia-se. As chaves privadas continuam protegidas pela
 palavra-passe OpenPGP.
 
+Não conseguir ler o PIN nunca deixa entrar (1.4.6): se a app não consegue confirmar se há PIN
+(o telemóvel bloqueou durante a abertura, ou o Keystore não respondeu), não abre o cofre e volta a
+perguntar ao tentar de novo. Até à 1.4.5, um erro a ler o PIN contava como "não há PIN".
+
 ## Palavra-passe com impressão digital (opcional)
 
 Em As minhas chaves, cada chave tem "Mais opções… > Usar a impressão digital" (Android 11 ou mais
@@ -251,6 +255,19 @@ abriam mensagens assim.
      65 011 712 iterações. É o máximo do formato que o GnuPG 2.4 também aceita.
   2. Cada ficheiro do cofre é cifrado com AES-256-GCM, com uma chave do Android Keystore
      (StrongBox quando existe) que não sai do chip de segurança do telemóvel.
+- **Cofre só com o telemóvel desbloqueado (1.4.6, Android 15 ou mais recente).** A chave do cofre
+  só funciona com o telemóvel desbloqueado: quando bloqueia, o Android tira-a da memória, e nem
+  quem consiga correr código como a app (uma ferramenta forense num telemóvel apreendido ligado,
+  por exemplo) abre o cofre. Os cofres que já existiam mudam de chave sozinhos na primeira abertura
+  com o Android 15: cada ficheiro é cifrado de novo, um a um, e se a app parar a meio continua na
+  vez seguinte, sem perder nada. Em ☰ > Definições aparece se está ligado.
+  - Não se usa antes do Android 15: do 12 ao 14, tirar o bloqueio de ecrã apagava estas chaves (e
+    com elas o cofre), e sem bloqueio de ecrã nem funcionavam. O Android 15 corrigiu isso.
+  - Se tiveres um desbloqueio "fraco" ligado (reconhecimento facial que não seja de classe 3, ou
+    Smart Lock / desbloqueio prolongado), o Android guarda a chave em memória enquanto esse
+    desbloqueio valer, e esta proteção perde-se nesse tempo.
+  - Com o telemóvel bloqueado a meio de uma operação, a app diz "O telemóvel bloqueou" e não toma
+    isso por ficheiros estragados: nada vai para o lado, nada se apaga.
 - Os dados ficam em `noBackupFilesDir` e estão excluídos de cópias de segurança e de transferências
   para outro telemóvel. **Se desinstalares a app, as chaves desaparecem: faz backup.**
 - **Nada de pessoal fora do cofre (1.4.3)**. Os nomes dos ficheiros do cofre são aleatórios
@@ -310,7 +327,8 @@ ainda não teve uma auditoria independente.
   como numa abertura normal, e o tempo de resposta é o mesmo.
 - **Cópia dos ficheiros da app** (extração forense): o cofre só se abre com a chave do chip de
   segurança, que não sai do telemóvel; os nomes dos ficheiros não dizem nada; as chaves privadas
-  têm ainda a palavra-passe OpenPGP. Nada vai para cópias de segurança.
+  têm ainda a palavra-passe OpenPGP. Nada vai para cópias de segurança. No Android 15 ou mais
+  recente, com o telemóvel bloqueado, nem a correr como a app se abre o cofre (1.4.6).
 - **Outras apps no mesmo telemóvel**: as proteções descritas em Segurança (capturas, janelas por
   cima, teclado, preenchimento automático, área de transferência, acessibilidade).
 - **Fugas pela rede**: a app não tem permissão de Internet, por isso o Android não a deixa abrir
@@ -384,6 +402,20 @@ coisa da app. Não substituem uma auditoria independente, mas apanham os erros m
 Para confirmar que os testes servem para alguma coisa, estragou-se a app de propósito (sem
 FLAG_SECURE, sem proteção contra toques por cima, a espera do PIN pela hora, sem limpar o ecrã ao
 fim de 5 minutos), e de cada vez falhou o teste certo.
+
+**`UnlockedKeyTest`** e **`LockedStoreTest`** (1.4.6), com chaves que se portam como as do Android 15:
+
+| Quem ataca | O que tenta | O que se verifica |
+|---|---|---|
+| Quem pega no telemóvel | Abrir a app com o telemóvel bloqueado para ela não conseguir ler o PIN | Não abre o cofre; depois de desbloquear, pede o PIN da app |
+| Quem pega no telemóvel | Um erro do Keystore ao ler o PIN | Não abre o cofre; "Tentar de novo" volta ao PIN |
+| Ferramenta forense | Correr como a app com o telemóvel bloqueado | O cofre não abre, e nada passa por "estragado" |
+| O próprio telemóvel | Bloquear a meio de uma leitura, ou desbloquear entre a leitura e a escrita | Nada vai para o lado, nenhuma lista fica vazia, nenhum backup sai incompleto |
+| O próprio telemóvel | Parar a meio da mudança de chave | Lê-se tudo com as duas chaves e a mudança acaba na vez seguinte |
+
+Também aqui se estragou a app de propósito (o erro a ler o PIN a contar como "sem PIN", as
+leituras bloqueadas a passar por "ilegível", a chave nova sem a exigência do desbloqueio), e de
+cada vez falhou o teste certo.
 
 **`tools/auditar-apk.sh`** olha para o APK final como quem o descarrega: não é depurável, cópias de
 segurança desligadas, só as permissões esperadas e sem Internet, só a atividade principal aberta,

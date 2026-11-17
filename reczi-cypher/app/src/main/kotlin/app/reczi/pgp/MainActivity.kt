@@ -58,6 +58,7 @@ import app.reczi.pgp.core.PinResult
 import app.reczi.pgp.core.Qr
 import app.reczi.pgp.core.SignatureStatus
 import app.reczi.pgp.core.Snapshot
+import app.reczi.pgp.core.StoreLockedException
 import app.reczi.pgp.core.Vault
 import java.text.DateFormat
 import java.util.Date
@@ -122,6 +123,8 @@ class MainActivity : Activity(), Ui {
     internal var hasPin = false
     internal var hasPanic = false
     private var everLoaded = false
+    /** O cofre não abriu por o telemóvel estar bloqueado: tenta-se de novo ao voltar à app. */
+    private var waitingForUnlock: (() -> Unit)? = null
     private var pendingShare: Intent? = null
 
     // ------------------------------------------------------------------ ciclo de vida
@@ -188,6 +191,12 @@ class MainActivity : Activity(), Ui {
         // Ao fim de 5 minutos fora da app, apaga do ecrã as mensagens em claro.
         val away = if (stoppedAt == 0L) 0L else SystemClock.elapsedRealtime() - stoppedAt
         if (away > 5 * 60_000) screens.forEach { it.clearSensitive() }
+        // O cofre não abriu por o telemóvel estar bloqueado: tenta de novo (e volta a pedir o PIN).
+        waitingForUnlock?.let { retry ->
+            waitingForUnlock = null
+            retry()
+            return
+        }
         // Volta a bloquear ao fim de um minuto fora da app (mas não a meio de escolher um ficheiro).
         val picking = pendingOpen != null || pendingBackupFpr != null || pendingSave != null
         if (away > LOCK_AFTER_MS && loaded && !locked && !picking && lockEnabled()) showLock()
@@ -220,7 +229,10 @@ class MainActivity : Activity(), Ui {
                 if (firstTime) warnExpiring(s)
                 if (firstTime) welcome(s)
                 then()
-            }) { showOpenFailed(it) }
+            }) { e ->
+                // Telemóvel bloqueado a meio: volta a passar pelo PIN quando for desbloqueado.
+                if (e is StoreLockedException) showDeviceLocked { startup(pendingShare) } else showOpenFailed(e) { load(firstTime = true) }
+            }
         }
     }
 
@@ -228,17 +240,41 @@ class MainActivity : Activity(), Ui {
 
     private fun lockEnabled() = hasPin || prefs.getBoolean(PREF_LOCK_BIO, false)
 
-    /** Ao abrir: vê se há PIN da app e mostra o ecrã de bloqueio, ou abre logo o cofre. */
+    /**
+     * Ao abrir: vê se há PIN da app e mostra o ecrã de bloqueio, ou abre logo o cofre. Não conseguir
+     * ler o PIN nunca é o mesmo que não haver PIN: nesse caso a app não abre o cofre (até à 1.4.5,
+     * um erro a ler o PIN deixava entrar sem ele).
+     */
     private fun startup(share: Intent?) {
         pendingShare = share
         work("A abrir…", {
-            // Se o cofre não se consegue ler, segue para o ecrã de recuperação (sem bloqueio).
-            runCatching { if (store.isKeyLost()) false to false else vault.hasPin() to vault.hasPanicPin() }.getOrDefault(false to false)
-        }) { (pin, panic) ->
-            hasPin = pin
-            hasPanic = panic
+            // null: a chave do cofre desapareceu (vai para o ecrã de recuperação, que não abre nada).
+            runCatching { if (store.isKeyLost()) null else vault.hasPin() to vault.hasPanicPin() }
+        }) { r ->
+            val pins = r.getOrElse { e ->
+                return@work if (e is StoreLockedException) showDeviceLocked { startup(pendingShare) }
+                else showOpenFailed(e) { startup(pendingShare) }
+            } ?: return@work showOpenFailed(VaultKeyLostException()) { startup(pendingShare) }
+            hasPin = pins.first
+            hasPanic = pins.second
             if (lockEnabled()) showLock() else unlocked()
         }
+    }
+
+    /** O cofre só abre com o telemóvel desbloqueado (Android 15+): espera, e tenta de novo ao voltar. */
+    private fun showDeviceLocked(retry: () -> Unit) {
+        loaded = false
+        locked = true
+        waitingForUnlock = retry
+        content.removeAllViews()
+        val col = column()
+        col.addView(heading("Desbloqueia o telemóvel"))
+        col.addView(label("O cofre só abre com o telemóvel desbloqueado. Desbloqueia-o e volta a esta app."))
+        col.addView(button("Tentar de novo") {
+            waitingForUnlock = null
+            retry()
+        })
+        content.addView(scroll(col))
     }
 
     private fun unlocked() {
@@ -682,7 +718,8 @@ class MainActivity : Activity(), Ui {
         }
     }
 
-    private fun showOpenFailed(e: Throwable) {
+    /** [retry]: "Tentar de novo" (volta ao PIN se ainda não se sabe se há PIN). */
+    private fun showOpenFailed(e: Throwable, retry: () -> Unit) {
         loaded = false
         content.removeAllViews()
         val col = column()
@@ -697,7 +734,7 @@ class MainActivity : Activity(), Ui {
             } + "\n\nSe tens um backup das tuas chaves privadas, também podes começar um cofre novo e importá-lo. " +
                 "Nada é apagado: os ficheiros e a chave antiga ficam postos de lado."
         ))
-        col.addView(button("Tentar de novo") { load(firstTime = true) })
+        col.addView(button("Tentar de novo") { retry() })
         col.addView(button("Começar um cofre novo…") {
             typedConfirm("Cofre novo", "Vais começar um cofre vazio. Escreve NOVO para confirmar:", "NOVO") {
                 work("A preparar…", { store.resetVault(); vault.clearCache() }) { load(firstTime = true) }
@@ -737,7 +774,8 @@ class MainActivity : Activity(), Ui {
     internal fun showError(e: Throwable) {
         val msg = when (e) {
             is PgpError -> e.message ?: "Erro."
-            is VaultKeyLostException -> return showOpenFailed(e)
+            is StoreLockedException -> "O telemóvel bloqueou a meio da operação. Desbloqueia-o e repete."
+            is VaultKeyLostException -> return showOpenFailed(e) { startup(pendingShare) }
             is OutOfMemoryError -> "Não há memória suficiente para esta operação."
             else -> "Erro inesperado (${e.javaClass.simpleName})."
         }
@@ -1276,6 +1314,9 @@ class MainActivity : Activity(), Ui {
     }
 
     internal fun clearClipboard() = ClipboardClearReceiver.clear(applicationContext)
+
+    /** A chave do cofre só funciona com o telemóvel desbloqueado (Android 15 ou mais recente). */
+    internal fun vaultUnlockedOnly(): Boolean = runCatching { store.isUnlockedOnly() }.getOrDefault(false)
 
     internal fun share(text: String) {
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Partilhar"))

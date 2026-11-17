@@ -27,4 +27,11 @@ object Vaults {
         store = KeystoreStore(context.applicationContext, key)
         vault = Vault(store!!)
     }
+
+    /** Testes: um cofre novo com chaves de faz-de-conta (p. ex. a imitar o Keystore do Android 15). */
+    @Synchronized
+    internal fun useForTests(context: Context, keys: VaultKeys) {
+        store = KeystoreStore(context.applicationContext, keys)
+        vault = Vault(store!!)
+    }
 }

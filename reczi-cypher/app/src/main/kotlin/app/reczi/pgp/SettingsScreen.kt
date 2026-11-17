@@ -54,6 +54,15 @@ internal class SettingsScreen(a: MainActivity) : Screen(a, "Definições") {
                 "A palavra-passe da chave continua a ser pedida para assinar e desencriptar; para a trocar pela impressão digital, " +
                 "usa Mais opções > \"Usar a impressão digital\" em ☰ > As minhas chaves."
         ))
+        lockBox.addView(label(
+            if (a.vaultUnlockedOnly()) {
+                "✔ A chave do cofre só funciona com o telemóvel desbloqueado: com ele bloqueado, nem uma ferramenta que corra " +
+                    "como esta app consegue abrir o cofre."
+            } else {
+                "A chave do cofre funciona sempre que o telemóvel já foi desbloqueado desde que ligou. Prendê-la ao telemóvel " +
+                    "desbloqueado só é seguro a partir do Android 15 (antes, tirar o bloqueio de ecrã apagava-a)."
+            }
+        ))
         lockBox.addView(CheckBox(a).apply {
             text = "Desbloquear com a impressão digital (ou o bloqueio do telemóvel)"
             isChecked = a.prefs.getBoolean(PREF_LOCK_BIO, false)

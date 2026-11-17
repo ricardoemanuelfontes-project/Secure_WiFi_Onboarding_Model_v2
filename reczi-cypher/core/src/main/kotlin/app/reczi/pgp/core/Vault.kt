@@ -15,6 +15,13 @@ interface Store {
     fun quarantine(name: String) = delete(name)
 }
 
+/**
+ * O armazenamento não se pode usar agora porque o telemóvel está bloqueado (Android 15 ou mais
+ * recente: a chave do cofre só funciona com o telemóvel desbloqueado). NÃO é um ficheiro estragado:
+ * desbloqueia-se e repete-se. Quem lê o cofre nunca a pode tratar como "ilegível" nem como "não há".
+ */
+class StoreLockedException(cause: Throwable? = null) : java.io.IOException("O telemóvel bloqueou: desbloqueia-o e repete.", cause)
+
 class MemoryStore : Store {
     private val files = linkedMapOf<String, ByteArray>()
     override fun names() = files.keys.toList()
@@ -95,6 +102,8 @@ class Vault(private val store: Store) {
         val broken = mutableListOf<BrokenEntry>()
         val verified = try {
             verified()
+        } catch (e: StoreLockedException) {
+            throw e
         } catch (e: Exception) {
             broken += BrokenEntry(VERIFIED, false, "Lista de contactos verificados ilegível; todos ficam por verificar.")
             emptySet()
@@ -105,6 +114,8 @@ class Vault(private val store: Store) {
                 ring = PGPainless.readKeyRing().secretKeyRing(load(name) ?: return@mapNotNull null)
                     ?: throw PgpError("vazio")
                 MyKey(ring, Pgp.info(ring))
+            } catch (e: StoreLockedException) {
+                throw e
             } catch (e: Exception) {
                 broken += if (ring != null) {
                     BrokenEntry(name, true, "A chave lê-se, mas não pode ser usada agora: ${reason(e)} Confirma a data e a hora do telemóvel.", ring)
@@ -122,13 +133,15 @@ class Vault(private val store: Store) {
                     ?: throw PgpError("vazio")
                 val info = Pgp.info(cert)
                 if (info.fingerprint in mine) return@mapNotNull null
-                val pairs = runCatching { pairs(info.fingerprint) }.getOrNull()
+                val pairs = orNull { pairs(info.fingerprint) }
                 val check = when {
                     pairs != null && pairs.size == 1 -> Disguise.checkDigits(pairs.values.single())
                     pairs != null -> pairs.entries.joinToString("; ") { (fpr, s) -> "${Disguise.checkDigits(s)} (${myNames[fpr] ?: fpr.takeLast(16)})" }
-                    else -> runCatching { code(info.fingerprint) }.getOrNull()?.let(Disguise::checkDigits)
+                    else -> orNull { code(info.fingerprint) }?.let(Disguise::checkDigits)
                 }
                 Contact(cert, info, info.fingerprint in verified, check, codeIsOld = pairs == null && check != null)
+            } catch (e: StoreLockedException) {
+                throw e
             } catch (e: Exception) {
                 broken += BrokenEntry(name, false, reason(e))
                 null
@@ -138,6 +151,8 @@ class Vault(private val store: Store) {
             try {
                 val (millis, label) = String(load(name) ?: return@mapNotNull null, Charsets.UTF_8).split("\n", limit = 3)
                 Note(name.removePrefix(NOTE), java.util.Date(millis.toLong()), label)
+            } catch (e: StoreLockedException) {
+                throw e
             } catch (e: Exception) {
                 broken += BrokenEntry(name, false, "Nota ilegível.")
                 null
@@ -190,6 +205,8 @@ class Vault(private val store: Store) {
             try {
                 val old = try {
                     load(PUB + fpr)?.let { PGPainless.readKeyRing().publicKeyRing(it) }
+                } catch (e: StoreLockedException) {
+                    throw e
                 } catch (e: Exception) {
                     null // ficheiro estragado: substitui-se pela chave nova
                 }
@@ -219,7 +236,7 @@ class Vault(private val store: Store) {
 
     @Synchronized
     fun setVerified(fingerprint: String, verified: Boolean) {
-        val set = try { verified().toMutableSet() } catch (e: Exception) { mutableSetOf() }
+        val set = try { verified().toMutableSet() } catch (e: StoreLockedException) { throw e } catch (e: Exception) { mutableSetOf() }
         val changed = if (verified) set.add(fingerprint) else set.remove(fingerprint)
         if (changed) save(VERIFIED, set.sorted().joinToString("\n").toByteArray())
     }
@@ -297,10 +314,10 @@ class Vault(private val store: Store) {
         // Primeiro os códigos da versão 2; depois os antigos, para o que veio de apps antigas.
         val codes = names.filter { it.startsWith(PAIR) }.flatMap { n ->
             val fpr = n.removePrefix(PAIR)
-            runCatching { pairs(fpr) }.getOrNull().orEmpty().values.map { Code(fpr, it, old = false) }
+            orNull { pairs(fpr) }.orEmpty().values.map { Code(fpr, it, old = false) }
         } + names.filter { it.startsWith(CODE) }.mapNotNull { n ->
             val fpr = n.removePrefix(CODE)
-            runCatching { code(fpr) }.getOrNull()?.let { Code(fpr, it, old = true) }
+            orNull { code(fpr) }?.let { Code(fpr, it, old = true) }
         }
         val (bytes, i) = Disguise.revealWith(text, codes.map { it.secret }) ?: return null
         val armored = runCatching { Pgp.ensureArmored(bytes) }.getOrNull() ?: return null
@@ -445,7 +462,7 @@ class Vault(private val store: Store) {
 
     /** Um ficheiro estragado só faz perder preferências (o próximo [setPrefs] substitui-o). */
     private fun readPrefs(): Map<String, String> {
-        val data = runCatching { store.read(PREFS) }.getOrNull() ?: return emptyMap()
+        val data = orNull { store.read(PREFS) } ?: return emptyMap()
         return String(data, Charsets.UTF_8).lines().mapNotNull { line ->
             val i = line.indexOf('=')
             if (i > 0 && i < line.length - 1 && isPrefName(line.substring(0, i))) line.substring(0, i) to line.substring(i + 1) else null
@@ -462,7 +479,7 @@ class Vault(private val store: Store) {
     fun exportBackup(passphrase: CharArray): ByteArray {
         val entries = synchronized(this) {
             store.names().filter { name -> KINDS.any { name.startsWith(it) } || name == VERIFIED }
-                .mapNotNull { name -> runCatching { load(name) }.getOrNull()?.let { name to it } }.toMap()
+                .mapNotNull { name -> orNull { load(name) }?.let { name to it } }.toMap()
         }
         if (entries.keys.none { it.startsWith(SEC) }) throw PgpError("Ainda não tens nenhuma chave para pôr no backup.")
         return Backup.seal(entries, passphrase)
@@ -483,13 +500,13 @@ class Vault(private val store: Store) {
             for ((name, bytes) in entries.filterKeys { it.startsWith(SEC) }) {
                 val ring = runCatching { PGPainless.readKeyRing().secretKeyRing(bytes) }.getOrNull() ?: continue
                 if (name != SEC + Pgp.fingerprint(ring) || load(name) != null) continue
-                if (runCatching { addMyKey(ring) }.isSuccess) keys++
+                if (succeeds { addMyKey(ring) }) keys++
             }
             val certs = entries.filterKeys { it.startsWith(PUB) }.mapNotNull { (name, bytes) ->
                 runCatching { PGPainless.readKeyRing().publicKeyRing(bytes) }.getOrNull()?.takeIf { name == PUB + Pgp.fingerprint(it) }
             }
             val imported = if (certs.isEmpty()) ImportResult(emptyList(), 0, emptyList())
-            else runCatching { importContacts(certs) }.getOrDefault(ImportResult(emptyList(), 0, emptyList()))
+            else orNull { importContacts(certs) } ?: ImportResult(emptyList(), 0, emptyList())
             val known = snapshot().contacts.map { it.info.fingerprint }.toSet()
             // O backup está autenticado pela palavra-passe: as verificações que lá vêm são as tuas.
             entries[VERIFIED]?.toString(Charsets.UTF_8)?.lines()?.filter { it in known }?.forEach { setVerified(it, true) }
@@ -727,6 +744,17 @@ class Vault(private val store: Store) {
     }
 
     private fun reason(e: Exception) = (e as? PgpError)?.message ?: "Ficheiro ilegível (${e.javaClass.simpleName})."
+
+    /** Como runCatching { }.getOrNull(), mas um cofre bloqueado não passa por ficheiro estragado nem por "não há". */
+    private inline fun <T> orNull(block: () -> T): T? = try {
+        block()
+    } catch (e: StoreLockedException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    private inline fun succeeds(block: () -> Unit): Boolean = orNull { block(); true } ?: false
 
     companion object {
         private const val SEC = "sec-"
