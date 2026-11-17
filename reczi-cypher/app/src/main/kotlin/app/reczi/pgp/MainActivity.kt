@@ -1262,18 +1262,17 @@ class MainActivity : Activity() {
     /** Pergunta em que formato partilhar um texto PGP: normal ou disfarçado (ver Disguise no núcleo). */
     private fun pickFormat(armored: String, then: (String) -> Unit) {
         AlertDialog.Builder(this).setTitle("Formato")
-            .setItems(FORMATS) { _, i -> then(formatted(armored, i, null)) }
+            .setItems(FORMATS.map { it.label }.toTypedArray()) { _, i -> then(formatted(armored, FORMATS[i].id, null)) }
             .setNegativeButton("Cancelar", null)
             .showSecure()
     }
 
-    /** [codeFpr]: contacto cujo código secreto fecha a camada de fora (só nos formatos disfarçados). */
-    private fun formatted(armored: String, format: Int, codeFpr: String?): String = when (format) {
-        FORMAT_CODE -> vault.disguise(armored, words = false, codeFpr = codeFpr)
-        FORMAT_WORDS -> vault.disguise(armored, words = true, codeFpr = codeFpr)
-        FORMAT_POEM -> vault.disguise(armored, Disguise.Style.Poem, codeFpr)
-        else -> armored
-    }
+    /**
+     * [format]: o id do formato ([Format.id]). [codeFpr]: contacto cujo código secreto fecha a camada
+     * de fora (só nos formatos disfarçados).
+     */
+    private fun formatted(armored: String, format: Int, codeFpr: String?): String =
+        formatById(format).style?.let { vault.disguise(armored, it, codeFpr) } ?: armored
 
     /** Combinar (ou mudar) o código secreto com um contacto. */
     private fun askSecretCode(c: Contact) {
@@ -1949,6 +1948,7 @@ class MainActivity : Activity() {
         private val useCode = CheckBox(this@MainActivity).apply { isChecked = prefs.getBoolean(PREF_USE_CODE, false) }
         private val output = textArea("", 5, mono = true).apply { keyListener = null; setTextIsSelectable(true) }
         private val outTitle = heading("Mensagem encriptada")
+        private val outNote = label("").apply { visibility = View.GONE }
         private val outBox = column(0)
         /** Encriptar um ficheiro: o que estava escolhido quando se carregou no botão. */
         private var fileJob: Triple<List<String>, String, Boolean>? = null
@@ -1959,8 +1959,10 @@ class MainActivity : Activity() {
                 "(mensagens, email...): só os destinatários o conseguem abrir.\n\n" +
                 "• Para: só aparecem contactos verificados. \"Eu\" serve para guardares algo só para ti.\n" +
                 "• Assinar: prova que foste tu a escrever; pede a tua palavra-passe.\n" +
-                "• Formato: \"PGP normal\" abre em qualquer programa mas vê-se que é PGP; os \"Disfarçados\" não parecem PGP e só abrem no Reczi cypher: " +
-                "código (curto, parece um token), palavras (soltas, comprido) ou poema (versos em quadras, o mais comprido e o que menos chama a atenção).\n" +
+                "• Formato: \"PGP normal\" abre em qualquer programa mas vê-se que é PGP; os \"Disfarçados\" não parecem PGP e só abrem no Reczi cypher. " +
+                "Por baixo são todos iguais (a mesma encriptação); só muda a aparência: código (curto, parece um token), poema, crónica (as novidades da semana), " +
+                "diário de viagem, relato de futebol ou letra de rap. Os textos corridos lêem-se como texto normal, mas são compridos: " +
+                "depois de encriptar vês quantas frases ficou. Quem recebe não escolhe nada: a app reconhece o formato.\n" +
                 "• Modo compacto: a mensagem fica com cerca de metade do tamanho, o que encurta muito o poema. Em troca não leva a tua assinatura " +
                 "(o destinatário não confirma que é tua) e não fica encriptada para ti (não a consegues reler depois).\n" +
                 "• Código secreto: opção desligada por omissão. Só aparece com um formato disfarçado e um só destinatário com quem combinaste " +
@@ -1985,19 +1987,13 @@ class MainActivity : Activity() {
             }
             col.addView(compact)
             col.addView(heading("Formato"))
-            format.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, FORMATS)
-            format.setSelection(prefs.getInt(PREF_FORMAT, FORMAT_PGP).coerceIn(0, FORMATS.size - 1))
+            format.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, FORMATS.map { it.label })
+            format.setSelection(formatPosition(prefs.getInt(PREF_FORMAT, FORMAT_PGP)))
             format.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, v: View?, position: Int, id: Long) {
-                    prefs.edit().putInt(PREF_FORMAT, position).apply()
+                    prefs.edit().putInt(PREF_FORMAT, FORMATS[position].id).apply()
                     updateCode()
-                    formatHint.text = when (position) {
-                        FORMAT_CODE -> "Parece um código ao acaso; não se vê que é PGP. Só quem usa o Reczi cypher o consegue abrir."
-                        FORMAT_WORDS -> "Parece uma lista de palavras soltas (fica bem mais comprido). Só quem usa o Reczi cypher o consegue abrir."
-                        FORMAT_POEM -> "Parece um poema em português, em quadras. É o mais comprido: uma mensagem curta dá à volta de 100 versos " +
-                            "(cerca de 50 com o modo compacto). Só quem usa o Reczi cypher o consegue abrir."
-                        else -> "Mensagem PGP normal: abre em qualquer programa OpenPGP (GnuPG, etc.), mas vê-se logo que é PGP."
-                    }
+                    formatHint.text = FORMATS[position].hint
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
@@ -2009,6 +2005,7 @@ class MainActivity : Activity() {
             col.addView(button("Encriptar um ficheiro ou fotografia…") { pickFile() })
             col.addView(label("Para assinar sem encriptar (por exemplo, um email ao CERT), usa ☰ > Assinar e verificar."))
             outBox.addView(outTitle)
+            outBox.addView(outNote)
             outBox.addView(output)
             outBox.addView(buttonRow(
                 button("Copiar") { copy(output.text.toString(), sensitive = false) },
@@ -2028,7 +2025,7 @@ class MainActivity : Activity() {
             val mine = snap.myKeys.map { it.info.fingerprint }.toSet()
             val others = boxes.filter { it.first.isChecked }.map { it.second }.filterNot { it in mine }
             val c = others.singleOrNull()?.let { fpr -> snap.contacts.firstOrNull { it.info.fingerprint == fpr && it.codeCheck != null } }
-            codeFpr = c?.info?.fingerprint?.takeIf { format.selectedItemPosition != FORMAT_PGP }
+            codeFpr = c?.info?.fingerprint?.takeIf { selectedFormat().id != FORMAT_PGP }
             useCode.text = "Fechar com o código secreto de ${c?.info?.userId ?: ""}"
             useCode.visibility = if (codeFpr != null) View.VISIBLE else View.GONE
         }
@@ -2036,7 +2033,7 @@ class MainActivity : Activity() {
         /** Prepara uma resposta: fica escolhido só este destinatário. */
         fun replyTo(fingerprint: String) {
             // O formato e a opção do código secreto usados da última vez com este contacto.
-            prefs.getInt(PREF_CONTACT_FORMAT + fingerprint, -1).takeIf { it in FORMATS.indices }?.let { format.setSelection(it) }
+            prefs.getInt(PREF_CONTACT_FORMAT + fingerprint, -1).takeIf { it >= 0 }?.let { format.setSelection(formatPosition(it)) }
             useCode.isChecked = prefs.getBoolean(PREF_CONTACT_CODE + fingerprint, false)
             preselect = setOf(fingerprint)
             draft.setText("")
@@ -2098,7 +2095,7 @@ class MainActivity : Activity() {
             val text = draft.text.toString()
             val to = boxes.filter { it.first.isChecked }.map { it.second }
             val me = myFprs.getOrNull(myKeySpinner.selectedItemPosition.coerceAtLeast(0))
-            val fmt = format.selectedItemPosition
+            val fmt = selectedFormat()
             updateCode()
             val code = codeFpr?.takeIf { useCode.isChecked }
             val small = compact.isChecked
@@ -2111,17 +2108,39 @@ class MainActivity : Activity() {
             // Com um só contacto (além de ti), lembra o formato e o código para a próxima conversa com ele.
             val mine = snap.myKeys.map { it.info.fingerprint }.toSet()
             to.filterNot { it in mine }.singleOrNull()?.let { other ->
-                prefs.edit().putInt(PREF_CONTACT_FORMAT + other, fmt).putBoolean(PREF_CONTACT_CODE + other, useCode.isChecked).apply()
+                prefs.edit().putInt(PREF_CONTACT_FORMAT + other, fmt.id).putBoolean(PREF_CONTACT_CODE + other, useCode.isChecked).apply()
             }
             val run = { chars: CharArray? ->
                 work("A encriptar…", {
-                    try { formatted(vault.encrypt(text, to, me!!, chars != null, chars, toSelf = !small), fmt, code) } finally { chars?.fill('\u0000') }
-                }) { showOutput(if (small) "Mensagem encriptada (compacta: não a consegues reler)" else "Mensagem encriptada", it) }
+                    try { formatted(vault.encrypt(text, to, me!!, chars != null, chars, toSelf = !small), fmt.id, code) } finally { chars?.fill('\u0000') }
+                }) { out ->
+                    showOutput(if (small) "Mensagem encriptada (compacta: não a consegues reler)" else "Mensagem encriptada", out)
+                    outNote.text = sizeNote(out, fmt, small)
+                    outNote.visibility = if (outNote.text.isEmpty()) View.GONE else View.VISIBLE
+                }
             }
             if (sign.isChecked && !small) keyPassphrase("Assinar", "Palavra-passe da tua chave:", me) { run(it) } else run(null)
         }
 
+        private fun selectedFormat(): Format = FORMATS[format.selectedItemPosition.coerceIn(0, FORMATS.size - 1)]
+
+        /** Quanto ficou o texto disfarçado, para veres antes de enviar se ficou comprido de mais. */
+        private fun sizeNote(text: String, fmt: Format, small: Boolean): String {
+            val style = fmt.style ?: return ""
+            val units = Disguise.units(text, style) ?: return ""
+            val words = text.split(Regex("\\s+")).count { it.isNotEmpty() }
+            val size = "Tamanho: $units ${fmt.unit}, cerca de $words palavras."
+            return when {
+                words < 1500 -> size
+                small -> "$size Ficou comprido (as chaves RSA e as mensagens longas dão textos maiores); " +
+                    "o código ou o poema ficam mais curtos."
+                else -> "$size Ficou comprido: o modo compacto (acima) encurta para cerca de metade, " +
+                    "e o código ou o poema ficam mais curtos."
+            }
+        }
+
         private fun showOutput(title: String, text: String) {
+            outNote.visibility = View.GONE
             outTitle.text = title
             output.setText(text)
             outBox.visibility = View.VISIBLE
@@ -2788,12 +2807,44 @@ class MainActivity : Activity() {
         const val KIND_MESSAGE = "message"
         const val PREF_FORMAT = "format"
         const val PREF_USE_CODE = "useCode"
+        // Ids guardados nas preferências: nunca mudar os números (o 2 era "palavras", que já não se oferece).
         const val FORMAT_PGP = 0
         const val FORMAT_CODE = 1
         const val FORMAT_WORDS = 2
         const val FORMAT_POEM = 3
+        const val FORMAT_CHRONICLE = 4
+        const val FORMAT_TRIP = 5
+        const val FORMAT_FOOTBALL = 6
+        const val FORMAT_LYRICS = 7
         const val PREF_COMPACT = "compact"
-        val FORMATS = arrayOf("PGP normal", "Disfarçado: código", "Disfarçado: palavras", "Disfarçado: poema")
+        /** Os formatos oferecidos, pela ordem do menu. */
+        val FORMATS = listOf(
+            Format(FORMAT_PGP, "PGP normal", null, "",
+                "Mensagem PGP normal: abre em qualquer programa OpenPGP (GnuPG, etc.), mas vê-se logo que é PGP."),
+            Format(FORMAT_CODE, "Disfarçado: código", Disguise.Style.Code, "",
+                "Parece um código ao acaso; não se vê que é PGP. É o mais curto. Só quem usa o Reczi cypher o consegue abrir."),
+            Format(FORMAT_POEM, "Disfarçado: poema", Disguise.Style.Poem, "versos",
+                "Parece um poema em português, em quadras. Uma mensagem curta dá à volta de 100 versos (cerca de 50 com o modo compacto); " +
+                    "com chaves RSA, bastante mais. Só quem usa o Reczi cypher o consegue abrir."),
+            Format(FORMAT_CHRONICLE, "Disfarçado: crónica do dia-a-dia", Disguise.Style.Chronicle, "frases",
+                "Parece uma carta com as novidades da semana (\"a tia Rosa foi à praça…\"). Lê-se como texto normal, mas é comprido: " +
+                    "uma mensagem curta dá à volta de 150 frases (80 com o modo compacto). Só quem usa o Reczi cypher o consegue abrir."),
+            Format(FORMAT_TRIP, "Disfarçado: diário de viagem", Disguise.Style.Trip, "frases",
+                "Parece o diário de uma viagem por Portugal: terras, tascas, monumentos. É o mais comprido dos textos: " +
+                    "uma mensagem curta dá à volta de 200 frases (100 com o modo compacto). Só quem usa o Reczi cypher o consegue abrir."),
+            Format(FORMAT_FOOTBALL, "Disfarçado: relato de futebol", Disguise.Style.Football, "frases",
+                "Parece o relato de um jogo: cruzamentos, remates, substituições. Uma mensagem curta dá à volta de 150 frases " +
+                    "(70 com o modo compacto). Só quem usa o Reczi cypher o consegue abrir."),
+            Format(FORMAT_LYRICS, "Disfarçado: letra de rap", Disguise.Style.Lyrics, "barras",
+                "Parece uma letra de rap, com barras rimadas aos pares: deuses antigos, futebol, géneros musicais. É o mais curto dos textos: " +
+                    "uma mensagem curta dá à volta de 130 barras (65 com o modo compacto). Só quem usa o Reczi cypher o consegue abrir."),
+        )
+
+        /** O formato com este id; o antigo "palavras" passa a crónica, e um id desconhecido a PGP normal. */
+        fun formatById(id: Int): Format =
+            FORMATS.firstOrNull { it.id == (if (id == FORMAT_WORDS) FORMAT_CHRONICLE else id) } ?: FORMATS[0]
+
+        fun formatPosition(id: Int): Int = FORMATS.indexOf(formatById(id))
         const val EXPIRY_WARN_DAYS = 30L
         /** Cores da marca Reczi: o preto e o vermelho do ícone. */
         const val BRAND_BLACK = 0xFF121212.toInt()
@@ -2814,3 +2865,6 @@ private fun java.io.InputStream.readUpTo(limit: Int): ByteArray {
     }
     return out.toByteArray()
 }
+
+/** Um formato de saída: [style] null é o PGP normal; [unit] é como se conta o tamanho (frases, versos…). */
+class Format(val id: Int, val label: String, val style: Disguise.Style?, val unit: String, val hint: String)

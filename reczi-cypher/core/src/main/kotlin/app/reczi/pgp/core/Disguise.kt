@@ -22,30 +22,39 @@ import javax.crypto.spec.SecretKeySpec
  * PGP. A confidencialidade continua a vir só do OpenPGP, por baixo. O disfarce também não esconde
  * que é texto encriptado; só que é PGP.
  *
- * Há três formas de escrever o resultado: "código" (Base64 URL-safe, curto), "palavras" (uma
- * palavra portuguesa por byte: muito mais comprido, mas parece texto solto e não um código) e
- * "poema" (versos com ar de frase; ver [Poem]).
+ * Há várias formas de escrever o resultado, todas com os mesmos bytes por baixo (a escolha só
+ * muda a aparência): "código" (Base64 URL-safe, curto), "palavras" (uma palavra por byte; já não
+ * se oferece, mas continua a abrir), "poema" (ver [Poem]) e os textos corridos de [Books]
+ * (crónica, diário de viagem, relato de futebol, letra de rap).
  *
- * CÓDIGO SECRETO (opcional, por contacto): em vez da chave fixa, a camada de fora pode usar uma
- * chave derivada de uma frase combinada entre duas pessoas ([deriveSecret]). Nesse caso é mesmo uma
+ * CÓDIGO SECRETO (opcional, por contacto): em vez da chave fixa, a camada de fora usa uma chave
+ * derivada de uma frase combinada entre duas pessoas ([deriveSecret]). Nesse caso é mesmo uma
  * segunda camada de segurança: sem a frase, nem com a app se consegue ver que por baixo está PGP.
+ * Desde a versão 1.4 esta camada usa ChaCha20 em vez de AES: o PGP por baixo já usa AES, e assim
+ * as duas camadas são algoritmos diferentes com chaves independentes (uma "cascata"); se um dia
+ * um deles falhar, o outro continua a proteger. As mensagens antigas (AES) continuam a abrir.
  *
- * Formato dos bytes: nonce(16) || AES-256-CTR(nonce, pgp) || etiqueta(4).
- * A etiqueta (HMAC-SHA256 truncado, com a mesma chave fixa) só serve para reconhecer de forma
- * fiável um texto disfarçado e detetar erros de cópia; a integridade real vem do OpenPGP.
+ * Formato dos bytes: nonce(16) || cifra(nonce, pgp) || etiqueta(4), em que a cifra é AES-256-CTR
+ * (chave fixa, ou código secreto antigo) ou ChaCha20 (código secreto, versão 1.4).
+ * A etiqueta (HMAC-SHA256 truncado) serve para reconhecer de forma fiável um texto disfarçado,
+ * saber que chave e que cifra o abrem, e detetar erros de cópia; a integridade real vem do OpenPGP.
  */
 object Disguise {
     private const val NONCE = 16
     private const val TAG = 4
 
-    private class Keys(val enc: ByteArray, val mac: ByteArray)
+    private class Keys(val enc: ByteArray, val mac: ByteArray, val chacha: Boolean = false)
 
     /** Chave fixa da app (camuflagem). */
     private val fixed = Keys(derive("enc"), derive("mac"))
     private val random = SecureRandom()
 
-    /** Chaves da camada de fora a partir de um código secreto já derivado ([deriveSecret]). */
-    private fun keysOf(secret: ByteArray) = Keys(hmac(secret, "enc".toByteArray()), hmac(secret, "mac".toByteArray()))
+    /** Chaves da camada de fora a partir de um código secreto já derivado ([deriveSecret]): ChaCha20 (1.4). */
+    private fun keysOf(secret: ByteArray) =
+        Keys(hmac(secret, "enc v2 chacha20".toByteArray()), hmac(secret, "mac v2".toByteArray()), chacha = true)
+
+    /** As de antes da versão 1.4 (AES), só para ler mensagens antigas. */
+    private fun oldKeysOf(secret: ByteArray) = Keys(hmac(secret, "enc".toByteArray()), hmac(secret, "mac".toByteArray()))
 
     const val MIN_CODE = 8
 
@@ -73,8 +82,19 @@ object Disguise {
     private fun derive(label: String): ByteArray =
         MessageDigest.getInstance("SHA-256").digest("Reczi cypher / disfarce v1 / $label".toByteArray(Charsets.UTF_8))
 
-    /** Como o texto disfarçado é escrito: um código, palavras soltas, ou versos (ver [Poem]). */
-    enum class Style { Code, Words, Poem }
+    /**
+     * Como o texto disfarçado é escrito. Words já não se oferece (parece uma lista ao acaso) mas
+     * continua a abrir. Não mudar a ordem: a app guarda a escolha pelo nome.
+     */
+    enum class Style { Code, Words, Poem, Chronicle, Trip, Football, Lyrics }
+
+    private fun book(style: Style): Prose? = when (style) {
+        Style.Chronicle -> Books.chronicle
+        Style.Trip -> Books.trip
+        Style.Football -> Books.football
+        Style.Lyrics -> Books.lyrics
+        else -> null
+    }
 
     /** Disfarça bytes PGP binários (mensagem ou chave pública). */
     fun hide(pgp: ByteArray, words: Boolean = false, secret: ByteArray? = null): String =
@@ -83,13 +103,25 @@ object Disguise {
     fun hide(pgp: ByteArray, style: Style, secret: ByteArray? = null): String {
         val keys = secret?.let(::keysOf) ?: fixed
         val nonce = ByteArray(NONCE).also { random.nextBytes(it) }
-        val body = ctr(keys, nonce, pgp)
+        val body = cipher(keys, nonce, pgp)
         val raw = nonce + body + tag(keys, nonce, body)
         return when (style) {
             Style.Words -> raw.joinToString(" ") { WORDS[it.toInt() and 0xff] }
             Style.Poem -> Poem.write(raw)
             Style.Code -> Base64.getUrlEncoder().withoutPadding().encodeToString(raw)
+            else -> book(style)!!.write(raw)
         }
+    }
+
+    /**
+     * Tamanho de um texto disfarçado, para mostrar antes de enviar: quantas frases, versos ou
+     * barras, conforme o estilo; null para o código.
+     */
+    fun units(text: String, style: Style): Int? = when (style) {
+        Style.Code -> null
+        Style.Words -> text.split(Regex("\\s+")).count { it.isNotEmpty() }
+        Style.Poem -> text.lines().count { it.isNotBlank() }
+        else -> book(style)!!.units(text)
     }
 
     /**
@@ -103,9 +135,10 @@ object Disguise {
      * índice do código que abriu o texto (-1 se foi a chave fixa da app).
      */
     fun revealWith(text: String, secrets: List<ByteArray>): Pair<ByteArray, Int>? {
-        val candidates = listOfNotNull(fromCode(text), fromWords(text), Poem.read(text)).filter { it.size > NONCE + TAG }
+        val candidates = (listOfNotNull(fromCode(text), fromWords(text), Poem.read(text)) +
+            Books.all.flatMap { it.read(text).orEmpty() }).filter { it.size > NONCE + TAG }
         if (candidates.isEmpty()) return null
-        val all = listOf(-1 to fixed) + secrets.mapIndexed { i, k -> i to keysOf(k) }
+        val all = listOf(-1 to fixed) + secrets.withIndex().flatMap { (i, k) -> listOf(i to keysOf(k), i to oldKeysOf(k)) }
         for (raw in candidates) for ((i, keys) in all) open(raw, keys)?.let { return it to i }
         return null
     }
@@ -115,7 +148,7 @@ object Disguise {
         val body = raw.copyOfRange(NONCE, raw.size - TAG)
         val tag = raw.copyOfRange(raw.size - TAG, raw.size)
         if (!MessageDigest.isEqual(tag, tag(keys, nonce, body))) return null
-        return ctr(keys, nonce, body)
+        return cipher(keys, nonce, body)
     }
 
     private fun fromCode(text: String): ByteArray? {
@@ -138,11 +171,25 @@ object Disguise {
 
     fun isDisguised(text: String): Boolean = reveal(text) != null
 
+    private fun cipher(keys: Keys, nonce: ByteArray, data: ByteArray): ByteArray =
+        if (keys.chacha) chacha20(keys, nonce, data) else ctr(keys, nonce, data)
+
     private fun ctr(keys: Keys, nonce: ByteArray, data: ByteArray): ByteArray =
         Cipher.getInstance("AES/CTR/NoPadding").run {
             init(Cipher.ENCRYPT_MODE, SecretKeySpec(keys.enc, "AES"), IvParameterSpec(nonce))
             doFinal(data)
         }
+
+    /**
+     * ChaCha20 (RFC 7539). O nonce do disfarce tem 16 bytes e o ChaCha20 usa 12, por isso cada
+     * mensagem tem a sua própria chave, HMAC(chave, nonce), e o nonce do ChaCha20 fica a zeros
+     * (como no XChaCha20: nunca se repete a mesma chave).
+     */
+    private fun chacha20(keys: Keys, nonce: ByteArray, data: ByteArray): ByteArray {
+        val engine = org.bouncycastle.crypto.engines.ChaCha7539Engine()
+        engine.init(true, org.bouncycastle.crypto.params.ParametersWithIV(org.bouncycastle.crypto.params.KeyParameter(hmac(keys.enc, nonce)), ByteArray(12)))
+        return ByteArray(data.size).also { engine.processBytes(data, 0, data.size, it, 0) }
+    }
 
     private fun tag(keys: Keys, nonce: ByteArray, body: ByteArray): ByteArray = hmac(keys.mac, nonce, body).copyOf(TAG)
 

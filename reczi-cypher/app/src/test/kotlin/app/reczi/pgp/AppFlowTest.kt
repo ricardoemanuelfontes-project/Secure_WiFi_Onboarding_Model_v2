@@ -152,6 +152,31 @@ class AppFlowTest {
     }
 
     @Test
+    fun disguisedAsRapLyricsAndReadBack() {
+        createKey()
+        menu("✉  Escrever (encriptar)")
+        screen().filterIsInstance<CheckBox>().first { it.text.startsWith("Eu: Ana") }.performClick()
+        val label = "Disfarçado: letra de rap"
+        val spinner = screen().filterIsInstance<android.widget.Spinner>().first { s -> (0 until s.adapter.count).any { s.adapter.getItem(it).toString() == label } }
+        spinner.setSelection((0 until spinner.adapter.count).first { spinner.adapter.getItem(it).toString() == label })
+        idle()
+        assertTrue(textOnScreen().contains("barras rimadas"))
+        field("Mensagem").setText("encontro às 8")
+        click("Encriptar")
+        typePassphrase() // assinar
+        val out = screen().filterIsInstance<EditText>().map { it.text.toString() }.first { it.lines().size > 20 }
+        assertTrue(!out.contains("PGP"))
+        val shown = textOnScreen()
+        assertTrue(shown, shown.contains(Regex("Tamanho: \\d+ barras, cerca de \\d+ palavras")))
+
+        menu("📥  Ler (desencriptar)")
+        field("Cola aqui a mensagem (normal ou disfarçada)").setText(out)
+        click("Desencriptar")
+        typePassphrase()
+        assertTrue(textOnScreen().contains("encontro às 8"))
+    }
+
+    @Test
     fun signAndVerifyText() {
         createKey()
         menu("✍  Assinar e verificar")

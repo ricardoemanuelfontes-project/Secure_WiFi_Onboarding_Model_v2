@@ -108,15 +108,40 @@ chip de segurança do telemóvel.
 ## Modo disfarçado
 
 Uma mensagem PGP normal vê-se logo que é PGP (`-----BEGIN PGP MESSAGE-----`). Em "Formato" podes
-escolher:
+escolher a aparência. Por baixo são todos iguais (a mesma mensagem OpenPGP, com a mesma camada de
+disfarce); só muda a forma de a escrever, e quem recebe não escolhe nada: a app reconhece o formato.
 
 - **PGP normal**: abre em qualquer programa OpenPGP.
-- **Disfarçado: código**: uma linha de letras e números ao acaso, sem cabeçalhos.
-- **Disfarçado: palavras**: uma lista de palavras portuguesas soltas (bem mais comprido).
+- **Disfarçado: código**: uma linha de letras e números ao acaso, sem cabeçalhos. O mais curto.
 - **Disfarçado: poema**: versos em português, em quadras ("Sobre o muro querido morre um luar").
-  Cada palavra de três listas (substantivos, adjetivos, verbos) leva um byte; maiúsculas, acentos,
-  pontuação e quebras de linha não contam ao ler. É o formato mais comprido: cerca de 100 versos
-  para uma mensagem curta assinada, cerca de 50 com o modo compacto.
+  Cada palavra de três listas (substantivos, adjetivos, verbos) leva um byte.
+- **Disfarçado: crónica do dia-a-dia**: as novidades da semana ("No sábado à noite, a avó Graça fez
+  cozido à portuguesa para toda a família."), com provérbios e expressões.
+- **Disfarçado: diário de viagem**: uma volta por Portugal, com terras, tascas e monumentos.
+- **Disfarçado: relato de futebol**: lances, faltas e substituições ("Pouco depois, Rui Matos
+  arranca pela esquerda e remata de longe!").
+- **Disfarçado: letra de rap**: barras rimadas aos pares, com deuses antigos, futebol e géneros
+  musicais ("Do amapiano à kizomba, celebro o manjar").
+
+Os textos corridos são moldes de frase com espaços, e cada espaço tem a sua lista de opções, à
+medida daquele sítio da frase; cada opção guarda alguns bits (ver `Prose.kt` e `Books.kt`).
+As listas evitam palavras de duplo sentido e números. Em todos os formatos de texto, maiúsculas,
+acentos, pontuação e quebras de linha não contam ao ler, por isso sobrevivem ao que as apps de
+mensagens fazem. O antigo formato "palavras" (palavras soltas) já não se oferece, mas continua a
+abrir.
+
+Tamanho, para uma mensagem curta (medido nos testes; depois de encriptar a app mostra o tamanho):
+
+| Formato | Chave ECC, normal | ECC, compacto | Chave RSA, normal | RSA, compacto |
+|---|---|---|---|---|
+| Poema | 113 versos | 58 versos | 460 versos | 170 versos |
+| Crónica | 155 frases | 78 frases | 606 frases | 228 frases |
+| Diário de viagem | 218 frases | 107 frases | 859 frases | 315 frases |
+| Relato de futebol | 149 frases | 70 frases | 575 frases | 218 frases |
+| Letra de rap | 130 barras | 64 barras | 526 barras | 190 barras |
+
+Com chaves RSA, as mensagens PGP são cerca de 4 vezes maiores. Para os textos corridos, o modo
+compacto ajuda muito.
 
 **Modo compacto** (em Escrever): a mensagem vai sem assinatura e sem cópia para ti, e fica com menos
 de metade do tamanho (175 em vez de 398 bytes numa mensagem curta). Em troca, o destinatário não
@@ -133,8 +158,11 @@ confirmação, que têm de ser iguais nos dois telemóveis. Depois, em Encriptar
 disfarçado e só esse destinatário, aparece a opção "Fechar com o código secreto", desligada por
 omissão: marca-se quando se quer usar, e a escolha fica lembrada para esse contacto.
 
-Com o código, a camada de fora passa a ser uma segunda cifra a sério (AES-256 com chave derivada da
-frase por scrypt): sem a frase, nem com a app se consegue ver que por baixo está PGP. Fica guardada
+Com o código, a camada de fora passa a ser uma segunda cifra a sério (ChaCha20, com chave derivada
+da frase por scrypt): sem a frase, nem com a app se consegue ver que por baixo está PGP. Desde a
+versão 1.4 é ChaCha20 e não AES, porque o OpenPGP por baixo já usa AES: assim são dois algoritmos
+diferentes com chaves independentes (uma "cascata"), e se um dia um deles falhar o outro continua a
+proteger. As mensagens com código feitas antes da 1.4 (AES) continuam a abrir. Fica guardada
 só a chave derivada, dentro do cofre. Se mudarem a frase, as mensagens antigas com código deixam de
 abrir.
 
